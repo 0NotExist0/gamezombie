@@ -58,19 +58,32 @@ const terrainSegments = 80;
 const terrainGeo = new THREE.PlaneGeometry(terrainSize, terrainSize, terrainSegments, terrainSegments);
 terrainGeo.rotateX(-Math.PI / 2);
 
-const posAttr = terrainGeo.attributes.position;
-function getTerrainHeight(x, z) {
-  const dist = Math.sqrt(x * x + z * z);
-  if (dist < 14) return 0; // Flat spawn zone
-  return Math.sin(x * 0.04) * Math.cos(z * 0.04) * 4.0 + 
-         Math.sin(x * 0.10 + z * 0.08) * 1.8 + 
-         (dist > 90 ? Math.pow((dist - 90) * 0.1, 1.5) : 0);
+function smoothstep(min, max, value) {
+  const x = Math.max(0, Math.min(1, (value - min) / (max - min)));
+  return x * x * (3 - 2 * x);
 }
 
+// Continuous procedural height function with smooth spawn blend (no cliffs or steps)
+function getProceduralHeight(x, z) {
+  const dist = Math.sqrt(x * x + z * z);
+  // Smoothly blend from 0 at spawn (dist <= 8) to 1 at dist >= 24
+  const spawnBlend = smoothstep(8, 24, dist);
+
+  // Natural undulating hills
+  const hills = Math.sin(x * 0.035) * Math.cos(z * 0.035) * 3.8 +
+                Math.sin(x * 0.09 + z * 0.07) * 1.6;
+
+  // Boundary perimeter mountains to keep player on map
+  const edgeWalls = dist > 90 ? Math.pow((dist - 90) * 0.12, 1.6) : 0;
+
+  return (hills * spawnBlend) + edgeWalls;
+}
+
+const posAttr = terrainGeo.attributes.position;
 for (let i = 0; i < posAttr.count; i++) {
   const x = posAttr.getX(i);
   const z = posAttr.getZ(i);
-  posAttr.setY(i, getTerrainHeight(x, z));
+  posAttr.setY(i, getProceduralHeight(x, z));
 }
 terrainGeo.computeVertexNormals();
 
@@ -84,7 +97,52 @@ const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
 terrainMesh.receiveShadow = true;
 scene.add(terrainMesh);
 
-// --- Environment: Trees & Rocks ---
+// --- EXACT MESH SURFACE COLLIDER (100% matches rendered 3D polygons) ---
+const segs = terrainSegments;
+const halfSize = terrainSize / 2;
+const cellSize = terrainSize / segs;
+const stride = segs + 1;
+
+function getTerrainHeight(x, z) {
+  if (x < -halfSize || x > halfSize || z < -halfSize || z > halfSize) {
+    return 0;
+  }
+
+  const gx = (x + halfSize) / cellSize;
+  const gz = (z + halfSize) / cellSize;
+
+  const col = Math.floor(gx);
+  const row = Math.floor(gz);
+
+  if (col < 0 || col >= segs || row < 0 || row >= segs) {
+    return 0;
+  }
+
+  const fx = gx - col;
+  const fz = gz - row;
+
+  // 4 corner vertex indices of the quad cell
+  const idxTL = row * stride + col;
+  const idxTR = idxTL + 1;
+  const idxBL = (row + 1) * stride + col;
+  const idxBR = idxBL + 1;
+
+  const hTL = posAttr.getY(idxTL);
+  const hTR = posAttr.getY(idxTR);
+  const hBL = posAttr.getY(idxBL);
+  const hBR = posAttr.getY(idxBR);
+
+  // Exact planar equation of the specific triangle face in PlaneGeometry
+  if (fx + fz < 1.0) {
+    return hTL + (hTR - hTL) * fx + (hBL - hTL) * fz;
+  } else {
+    return hBR + (hBL - hBR) * (1 - fx) + (hTR - hBR) * (1 - fz);
+  }
+}
+
+// --- Environment: Trees & Rocks with Obstacle Collision ---
+const obstacles = [];
+
 function createTree(x, z) {
   const y = getTerrainHeight(x, z);
   const group = new THREE.Group();
@@ -112,6 +170,7 @@ function createTree(x, z) {
   group.add(f2);
 
   scene.add(group);
+  obstacles.push({ x, z, radius: 0.65 });
 }
 
 function createRock(x, z) {
@@ -123,6 +182,7 @@ function createRock(x, z) {
   rock.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, 0);
   rock.castShadow = true;
   scene.add(rock);
+  obstacles.push({ x, z, radius: 0.95 });
 }
 
 for (let i = 0; i < 70; i++) {
@@ -574,20 +634,53 @@ function updatePlayer(dt) {
     playBeep(420, 0.12, 'triangle');
   }
 
-  // Gravity
-  player.velocity.y += gravity * dt;
+  // Gravity (when airborne)
+  if (!player.isGrounded) {
+    player.velocity.y += gravity * dt;
+  }
 
-  // Integrate position
-  player.position.x += player.velocity.x * dt;
-  player.position.z += player.velocity.z * dt;
-  player.position.y += player.velocity.y * dt;
+  // Integrate horizontal position
+  let nextX = player.position.x + player.velocity.x * dt;
+  let nextZ = player.position.z + player.velocity.z * dt;
 
-  // Ground collision
+  // Stay within terrain map boundaries
+  const maxBound = halfSize - 3;
+  nextX = Math.max(-maxBound, Math.min(maxBound, nextX));
+  nextZ = Math.max(-maxBound, Math.min(maxBound, nextZ));
+
+  // Obstacle collision (trees and rocks)
+  for (let i = 0; i < obstacles.length; i++) {
+    const obs = obstacles[i];
+    const dx = nextX - obs.x;
+    const dz = nextZ - obs.z;
+    const distSq = dx * dx + dz * dz;
+    const minDist = obs.radius + 0.35;
+    if (distSq < minDist * minDist && distSq > 0.0001) {
+      const dist = Math.sqrt(distSq);
+      const push = (minDist - dist) / dist;
+      nextX += dx * push;
+      nextZ += dz * push;
+    }
+  }
+
+  player.position.x = nextX;
+  player.position.z = nextZ;
+
+  // Exact terrain surface height at current XZ
   const groundY = getTerrainHeight(player.position.x, player.position.z);
-  if (player.position.y <= groundY) {
+
+  if (player.isGrounded) {
+    // While grounded, stick firmly to exact ground triangle (no walking in air or sinking into slopes)
     player.position.y = groundY;
     player.velocity.y = 0;
-    player.isGrounded = true;
+  } else {
+    // While airborne (jumping or falling)
+    player.position.y += player.velocity.y * dt;
+    if (player.position.y <= groundY) {
+      player.position.y = groundY;
+      player.velocity.y = 0;
+      player.isGrounded = true;
+    }
   }
 
   // Update Three.js object group

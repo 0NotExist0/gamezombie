@@ -366,29 +366,51 @@ window.addEventListener('keyup', (e) => {
 // Pointer Lock & Touch Detection
 const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || window.matchMedia('(pointer: coarse)').matches;
 const touchControlsElem = document.getElementById('touch-controls');
-if (isTouchDevice && touchControlsElem) {
-  touchControlsElem.style.display = 'block';
-}
+
+let gameStarted = false;
 
 const overlay = document.getElementById('instructions-overlay');
 const startBtn = document.getElementById('start-btn');
 
-function requestLock() {
+function startGame(e) {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
   if (audioCtx.state === 'suspended') {
     audioCtx.resume();
   }
   if (!isTouchDevice && document.body.requestPointerLock) {
     document.body.requestPointerLock();
   }
+  gameStarted = true;
+  if (isTouchDevice && touchControlsElem) {
+    touchControlsElem.style.display = 'block';
+  }
   overlay.style.opacity = '0';
-  setTimeout(() => overlay.style.display = 'none', 300);
+  overlay.style.pointerEvents = 'none';
+  setTimeout(() => {
+    overlay.style.display = 'none';
+  }, 250);
+  playBeep(520, 0.1, 'sine');
 }
-startBtn.addEventListener('click', requestLock);
-overlay.addEventListener('click', requestLock);
+
+startBtn.addEventListener('click', startGame);
+startBtn.addEventListener('touchend', startGame);
+startBtn.addEventListener('pointerdown', startGame);
+
+overlay.addEventListener('click', (e) => {
+  if (e.target === overlay) startGame(e);
+});
+overlay.addEventListener('touchend', (e) => {
+  if (e.target === overlay) startGame(e);
+});
 
 document.addEventListener('pointerlockchange', () => {
   if (!isTouchDevice && document.pointerLockElement !== document.body) {
+    gameStarted = false;
     overlay.style.display = 'flex';
+    overlay.style.pointerEvents = 'auto';
     setTimeout(() => overlay.style.opacity = '1', 10);
   }
 });
@@ -429,6 +451,7 @@ const maxJoystickRadius = 45;
 
 if (joystickZone && joystickKnob) {
   joystickZone.addEventListener('touchstart', (e) => {
+    if (!gameStarted) return;
     e.preventDefault();
     if (joystickTouchId !== null) return;
     const touch = e.changedTouches[0];
@@ -497,6 +520,7 @@ let lastLookY = 0;
 
 if (touchLookZone) {
   touchLookZone.addEventListener('touchstart', (e) => {
+    if (!gameStarted) return;
     e.preventDefault();
     if (lookTouchId !== null) return;
     const touch = e.changedTouches[0];
@@ -550,6 +574,7 @@ if (touchLookZone) {
 const touchBtnJump = document.getElementById('touch-btn-jump');
 if (touchBtnJump) {
   touchBtnJump.addEventListener('touchstart', (e) => {
+    if (!gameStarted) return;
     e.preventDefault();
     e.stopPropagation();
     if (player.isGrounded) {
@@ -563,6 +588,7 @@ if (touchBtnJump) {
 const touchBtnSprint = document.getElementById('touch-btn-sprint');
 if (touchBtnSprint) {
   touchBtnSprint.addEventListener('touchstart', (e) => {
+    if (!gameStarted) return;
     e.preventDefault();
     e.stopPropagation();
     touchSprinting = !touchSprinting;

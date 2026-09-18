@@ -1,15 +1,21 @@
-﻿# Low-Poly Adventure (GameZombie) 🎮
+# Low-Poly Adventure 🎮
+
+**Azienda**: **Not Exist Game Productions**  
+**Sviluppatore**: **0Not_Exist0**  
 
 Un gioco d'avventura 3D in terza e prima persona sviluppato con **Three.js**, **Vite** e modelli 3D creati e riggati in **Blender**.
 
-## ✨ Caratteristiche
+## ✨ Caratteristiche Principali
 
-- **Modello 3D Riggato in Blender**: Personaggio con armature scheletrica, mesh gerarchica ed esportazione GLTF/GLB.
-- **Motore di Animazione Scheletrico Dinamico**:
-  - Camminata naturale con oscillazione cosce, piegamento ginocchia, flessione caviglie e oscillazione opposta delle braccia.
-  - Corsa / Scatto (`Shift`) con falcata aumentata e inclinazione in avanti.
-  - Salto / Posa aerea dinamica (`Spazio`).
-  - Animazione Idle con respiro delicato e oscillazione baricentro.
+- **Sistema Cinematica Inversa (2-Bone IK) alle Gambe**:
+  - Calcolo analitico in tempo reale della cinematica inversa per coscia, ginocchio e caviglia basato sulla Legge dei Coseni.
+  - **Fase di Appoggio (Stance Phase)**: Il piede si ancora solidamente alla superficie del terreno con contatto realistico, assorbimento del peso e rollio della caviglia (heel-strike -> appoggio piatto -> push-off con la punta).
+  - **Fase di Slancio (Swing Phase)**: Il piede si solleva dal terreno seguendo una traiettoria ad arco parabolico, scavalcando gli ostacoli ed estendendosi in avanti per l'appoggio successivo.
+  - **Dinamica del Bacino (Pelvic Bobbing & Sway)**: Il bacino oscilla verticalmente a doppia frequenza, si inclina lateralmente per sostenere il peso della gamba portante e ruota in imbardata seguendo la falcata.
+  - **Adattamento alle Pendenze del Terreno**: Le quote dei piedi interrogano l'altezza esatta della mesh procedurale sottostante, permettendo al personaggio di salire e scendere dossi e colline piegando le ginocchia in modo naturale senza sprofondare né fluttuare.
+- **Rig dell'Armature con Controlli IK in Blender**:
+  - Scheletro potenziato nei file `character.blend` e `game.blend` con controller `ik_foot.L`, `ik_foot.R` e pole targets per le ginocchia `pole_knee.L`, `pole_knee.R`.
+  - Vincoli IK a catena a 2 segmenti configurati con pole angle allineato al grado di riposo per animazione e posa professionale.
 - **Doppia Visuale**: Alterna tra 3ª persona (orbital camera) e 1ª persona (vista occhi) con il tasto `V`.
 - **Controlli Completi per Smartphone & Tablet**:
   - Joystick analogico virtuale a 360°.

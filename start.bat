@@ -3,7 +3,8 @@ title Low-Poly Adventure - Avvio Gioco
 cd /d "%~dp0"
 
 echo ===================================================
-echo          LOW-POLY ADVENTURE - AVVIO GIOCO
+echo     NOT EXIST GAME PRODUCTIONS presenta:
+echo         LOW-POLY ADVENTURE by 0Not_Exist0
 echo ===================================================
 echo.
 

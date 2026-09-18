@@ -2,6 +2,8 @@
   "name": "lowpoly-character-game",
   "private": true,
   "version": "1.0.0",
+  "description": "Low-Poly Adventure 3D Game by Not Exist Game Productions, developed by 0Not_Exist0",
+  "author": "0Not_Exist0 (Not Exist Game Productions)",
   "type": "module",
   "scripts": {
     "dev": "vite --host --port 3000",

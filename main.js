@@ -276,7 +276,9 @@ loader.load('/character.glb', (gltf) => {
   });
 
   player.group.add(player.model);
-  console.log('Character and bones loaded successfully:', Object.keys(player.bones));
+  console.log('🎮 Low-Poly Adventure — Not Exist Game Productions');
+  console.log('👤 Developed by: 0Not_Exist0');
+  console.log('🦴 Character and IK bones loaded successfully:', Object.keys(player.bones));
 });
 
 // --- Camera & View State ---
@@ -713,9 +715,9 @@ function updatePlayer(dt) {
   player.group.position.copy(player.position);
   player.group.rotation.y = player.facingAngle;
 
-  // -------------------------------------------------------------
-  // --- REAL SKELETAL ANIMATIONS (WALK, RUN, JUMP, IDLE) ---
-  // -------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // --- REAL SKELETAL 2-BONE INVERSE KINEMATICS (IK) & GAIT ENGINE ---
+  // -------------------------------------------------------------------------
   const bones = player.bones;
   const rest = player.restRotations;
   const restPos = player.restPositions;
@@ -739,17 +741,54 @@ function updatePlayer(dt) {
   const hips = getB('hips');
   const head = getB('head');
 
+  // Exact anatomical bone lengths measured from character rig
+  const LEG_L1 = 0.33734; // Thigh segment (hip to knee)
+  const LEG_L2 = 0.35128; // Shin segment (knee to ankle)
+  const REST_ANKLE_Y = 0.22; // Ground sole neutral ankle level
+  const REST_ANKLE_Z = 0.04; // Resting forward offset
+  const REST_HIP_Y = 0.90;   // Rest pelvis height
+
+  // Precomputed reference triangle constants
+  const D_REST = Math.sqrt(Math.pow(REST_ANKLE_Y - REST_HIP_Y, 2) + Math.pow(REST_ANKLE_Z, 2));
+  const GAMMA_REST = Math.atan2(REST_ANKLE_Z, REST_HIP_Y - REST_ANKLE_Y);
+  const COS_ALPHA1_REST = (LEG_L1 * LEG_L1 + D_REST * D_REST - LEG_L2 * LEG_L2) / (2 * LEG_L1 * D_REST);
+  const ALPHA1_REST = Math.acos(Math.max(-1, Math.min(1, COS_ALPHA1_REST)));
+  const THETA1_REST = GAMMA_REST + ALPHA1_REST;
+  const COS_ALPHA2_REST = (LEG_L1 * LEG_L1 + LEG_L2 * LEG_L2 - D_REST * D_REST) / (2 * LEG_L1 * LEG_L2);
+  const THETA_KNEE_REST = Math.PI - Math.acos(Math.max(-1, Math.min(1, COS_ALPHA2_REST)));
+
+  // Analytical 2-Bone Inverse Kinematics Solver (Law of Cosines)
+  function solveLegIK(hipY, hipZ, targetY, targetZ, restThighX, restShinX) {
+    const dy = targetY - hipY; // dy is negative
+    const dz = targetZ - hipZ;
+    const dist = Math.sqrt(dy * dy + dz * dz);
+    // Clamp to valid reachable range
+    const d = Math.max(Math.abs(LEG_L1 - LEG_L2) + 0.005, Math.min((LEG_L1 + LEG_L2) * 0.996, dist));
+
+    const gamma = Math.atan2(dz, -dy);
+    const cosAlpha1 = Math.max(-1, Math.min(1, (LEG_L1 * LEG_L1 + d * d - LEG_L2 * LEG_L2) / (2 * LEG_L1 * d)));
+    const alpha1 = Math.acos(cosAlpha1);
+    const theta1 = gamma + alpha1;
+
+    const cosAlpha2 = Math.max(-1, Math.min(1, (LEG_L1 * LEG_L1 + LEG_L2 * LEG_L2 - d * d) / (2 * LEG_L1 * LEG_L2)));
+    const thetaKnee = Math.PI - Math.acos(cosAlpha2);
+
+    return {
+      thighX: restThighX - (theta1 - THETA1_REST),
+      shinX: restShinX + (thetaKnee - THETA_KNEE_REST)
+    };
+  }
+
   if (thighR && getR('thighR')) {
     if (!player.isGrounded) {
-      // --- JUMP / AIRBORNE POSE ---
+      // --- JUMP / AIRBORNE ATHLETIC POSE ---
       const jumpLerp = Math.min(1.0, 14.0 * dt);
-      // Legs tuck up with knees bent and feet pointed
-      thighR.rotation.x += (getR('thighR').x - 0.35 - thighR.rotation.x) * jumpLerp;
-      thighL.rotation.x += (getR('thighL').x - 0.25 - thighL.rotation.x) * jumpLerp;
-      if (shinR) shinR.rotation.x += (getR('shinR').x + 0.60 - shinR.rotation.x) * jumpLerp;
-      if (shinL) shinL.rotation.x += (getR('shinL').x + 0.50 - shinL.rotation.x) * jumpLerp;
-      if (footR) footR.rotation.x += (getR('footR').x - 0.30 - footR.rotation.x) * jumpLerp;
-      if (footL) footL.rotation.x += (getR('footL').x - 0.30 - footL.rotation.x) * jumpLerp;
+      thighR.rotation.x += (getR('thighR').x - 0.38 - thighR.rotation.x) * jumpLerp;
+      thighL.rotation.x += (getR('thighL').x - 0.28 - thighL.rotation.x) * jumpLerp;
+      if (shinR) shinR.rotation.x += (getR('shinR').x + 0.65 - shinR.rotation.x) * jumpLerp;
+      if (shinL) shinL.rotation.x += (getR('shinL').x + 0.52 - shinL.rotation.x) * jumpLerp;
+      if (footR) footR.rotation.x += (getR('footR').x - 0.32 - footR.rotation.x) * jumpLerp;
+      if (footL) footL.rotation.x += (getR('footL').x - 0.32 - footL.rotation.x) * jumpLerp;
 
       // Arms flare outward for aerial balance
       if (armR) {
@@ -760,52 +799,131 @@ function updatePlayer(dt) {
         armL.rotation.y += (getR('upper_armL').y - 0.35 - armL.rotation.y) * jumpLerp;
         armL.rotation.x += (getR('upper_armL').x - 0.30 - armL.rotation.x) * jumpLerp;
       }
-      if (chest && getR('chest')) chest.rotation.x += (getR('chest').x - 0.10 - chest.rotation.x) * jumpLerp;
+      if (chest && getR('chest')) chest.rotation.x += (getR('chest').x - 0.12 - chest.rotation.x) * jumpLerp;
 
     } else if (isMoving) {
-      // --- WALK / SPRINT RUN CYCLE ---
-      const cycleSpeed = isSprinting ? 2.8 : 2.0;
+      // --- NATURAL INVERSE KINEMATICS (IK) GAIT CYCLE ---
+      const cycleSpeed = isSprinting ? 2.8 : 2.1;
       player.walkCycle += dt * currentSpeed * cycleSpeed;
       const cycle = player.walkCycle;
 
-      const strideAmp = isSprinting ? 0.72 : 0.50;
-      const legSwing = Math.sin(cycle);
-
-      // Thighs: pitch forward (-x moves forward +z) and back (+x moves back -z)
-      thighR.rotation.x = getR('thighR').x - legSwing * strideAmp;
-      thighL.rotation.x = getR('thighL').x + legSwing * strideAmp;
-
-      // Shins (knees): bend backward (+x) when lifting leg backwards
-      const kneeBendR = Math.max(0, legSwing) * (isSprinting ? 0.95 : 0.70);
-      const kneeBendL = Math.max(0, -legSwing) * (isSprinting ? 0.95 : 0.70);
-      if (shinR) shinR.rotation.x = getR('shinR').x + kneeBendR;
-      if (shinL) shinL.rotation.x = getR('shinL').x + kneeBendL;
-
-      // Feet (ankles): articulate naturally with stride
-      if (footR) footR.rotation.x = getR('footR').x + legSwing * 0.25;
-      if (footL) footL.rotation.x = getR('footL').x - legSwing * 0.25;
-
-      // Arms: swing on Y axis in natural opposition to legs
-      const armAmp = isSprinting ? 0.65 : 0.42;
-      if (armR) armR.rotation.y = getR('upper_armR').y - legSwing * armAmp;
-      if (armL) armL.rotation.y = getR('upper_armL').y - legSwing * armAmp;
-
-      // Forearms: slight bend during stride
-      if (foreR) foreR.rotation.x = getR('forearmR').x - Math.max(0, -legSwing) * 0.30;
-      if (foreL) foreL.rotation.x = getR('forearmL').x - Math.max(0, legSwing) * 0.30;
-
-      // Hips & Torso: vertical bounce and dynamic sway
-      if (hips && getP('hips')) {
-        hips.position.y = getP('hips').y + Math.abs(Math.sin(cycle * 2)) * (isSprinting ? 0.08 : 0.04);
-        hips.rotation.z = (getR('hips')?.z || 0) + Math.sin(cycle) * 0.05;
+      // 1. Pelvis Dynamics: Vertical bounce, lateral sway, yaw twist
+      const hipBob = (isSprinting ? 0.042 : 0.024) * Math.cos(cycle * 2) - (isSprinting ? 0.038 : 0.020);
+      const currentHipY = (getP('hips')?.y || REST_HIP_Y) + hipBob;
+      if (hips) {
+        hips.position.y = currentHipY;
+        hips.position.x = (getP('hips')?.x || 0) + Math.sin(cycle) * (isSprinting ? 0.022 : 0.014);
+        hips.rotation.z = (getR('hips')?.z || 0) + Math.sin(cycle) * (isSprinting ? 0.055 : 0.035);
+        hips.rotation.y = (getR('hips')?.y || 0) + Math.sin(cycle) * (isSprinting ? 0.08 : 0.05);
       }
+
+      // 2. Stride and Step Parameters
+      const strideZ = isSprinting ? 0.24 : 0.165;
+      const stepLift = isSprinting ? 0.135 : 0.085;
+      const stanceRatio = 0.58; // 58% stance, 42% swing (realistic biped gait)
+
+      // Facing orientation vectors for terrain height probing
+      const sinF = Math.sin(player.facingAngle);
+      const cosF = Math.cos(player.facingAngle);
+
+      // Helper function to solve leg targets and IK for a given leg
+      function computeLegKinematics(phase, isRight, thighName, shinName, footName) {
+        const tau = ((phase % (Math.PI * 2)) + (Math.PI * 2)) % (Math.PI * 2) / (Math.PI * 2);
+        let targetZ, targetY, anklePitch;
+
+        const legLocalX = isRight ? 0.14 : -0.14;
+
+        if (tau < stanceRatio) {
+          // --- STANCE PHASE (Foot planted, moving backward relative to body) ---
+          const u = tau / stanceRatio;
+          targetZ = strideZ * (1.0 - 2.0 * u);
+
+          // Ankle articulation: Heel-strike -> Flat plant -> Toe push-off roll
+          if (u < 0.15) {
+            anklePitch = -0.26 * (1.0 - u / 0.15); // Heel strike (dorsiflexion)
+          } else if (u < 0.70) {
+            anklePitch = 0.0; // Flat foot on ground
+          } else {
+            const push = (u - 0.70) / 0.30;
+            anklePitch = 0.36 * push; // Heel lifts, pushing with ball of foot
+          }
+
+          // Sample terrain slope at the foot's world position
+          const wX = player.position.x + sinF * targetZ + cosF * legLocalX;
+          const wZ = player.position.z + cosF * targetZ - sinF * legLocalX;
+          const slopeDelta = Math.max(-0.35, Math.min(0.35, getTerrainHeight(wX, wZ) - groundY));
+          targetY = REST_ANKLE_Y + slopeDelta;
+
+        } else {
+          // --- SWING PHASE (Foot lifts, arcs forward, prepares for touchdown) ---
+          const s = (tau - stanceRatio) / (1.0 - stanceRatio);
+          // Smooth forward travel
+          targetZ = -strideZ + 2.0 * strideZ * (0.5 - 0.5 * Math.cos(Math.PI * s));
+
+          // Parabolic clearance lift
+          const swingArc = stepLift * Math.sin(Math.PI * s);
+
+          // Ankle clearance articulation
+          if (s < 0.22) {
+            anklePitch = 0.36 * (1.0 - s / 0.22); // Liftoff point
+          } else if (s < 0.75) {
+            anklePitch = -0.06; // Ground clearance
+          } else {
+            const prep = (s - 0.75) / 0.25;
+            anklePitch = -0.06 - 0.20 * prep; // Prepare for heel strike
+          }
+
+          const wX = player.position.x + sinF * targetZ + cosF * legLocalX;
+          const wZ = player.position.z + cosF * targetZ - sinF * legLocalX;
+          const slopeDelta = Math.max(-0.35, Math.min(0.35, getTerrainHeight(wX, wZ) - groundY));
+          targetY = REST_ANKLE_Y + slopeDelta * (1.0 - Math.sin(Math.PI * s)) + swingArc;
+        }
+
+        // Solve 2-Bone IK
+        const ik = solveLegIK(currentHipY, 0.0, targetY, targetZ, getR(thighName).x, getR(shinName).x);
+        return { ik, anklePitch };
+      }
+
+      // Compute IK for Right Leg (phase = cycle) and Left Leg (phase = cycle + PI)
+      const resR = computeLegKinematics(cycle, true, 'thighR', 'shinR', 'footR');
+      const resL = computeLegKinematics(cycle + Math.PI, false, 'thighL', 'shinL', 'footL');
+
+      thighR.rotation.x = resR.ik.thighX;
+      shinR.rotation.x = resR.ik.shinX;
+      if (footR) footR.rotation.x = getR('footR').x + resR.anklePitch;
+
+      thighL.rotation.x = resL.ik.thighX;
+      shinL.rotation.x = resL.ik.shinX;
+      if (footL) footL.rotation.x = getR('footL').x + resL.anklePitch;
+
+      // 3. Upper Body Natural Balance
+      // Arms swing in natural opposition to legs
+      const armSwing = Math.sin(cycle);
+      const armAmpY = isSprinting ? 0.68 : 0.44;
+      const armAmpX = isSprinting ? 0.32 : 0.18;
+
+      if (armR) {
+        armR.rotation.y = getR('upper_armR').y - armSwing * armAmpY;
+        armR.rotation.x = getR('upper_armR').x + armSwing * armAmpX;
+      }
+      if (armL) {
+        armL.rotation.y = getR('upper_armL').y - armSwing * armAmpY;
+        armL.rotation.x = getR('upper_armL').x - armSwing * armAmpX;
+      }
+
+      // Forearms (elbows) dynamic flexion on forward swing
+      if (foreR) foreR.rotation.x = getR('forearmR').x - Math.max(0, -armSwing) * (isSprinting ? 0.48 : 0.30);
+      if (foreL) foreL.rotation.x = getR('forearmL').x - Math.max(0, armSwing) * (isSprinting ? 0.48 : 0.30);
+
+      // Spine & Chest counter-rotation and forward tilt
       if (chest && getR('chest')) {
-        chest.rotation.y = (getR('chest').y || 0) - Math.sin(cycle) * 0.07;
-        chest.rotation.x = (getR('chest').x || 0) - (isSprinting ? 0.14 : 0.04);
+        chest.rotation.y = (getR('chest').y || 0) - Math.sin(cycle) * (isSprinting ? 0.075 : 0.045);
+        chest.rotation.x = (getR('chest').x || 0) - (isSprinting ? 0.16 : 0.055);
+        chest.rotation.z = (getR('chest').z || 0) - Math.sin(cycle) * 0.02;
       }
 
     } else {
-      // --- IDLE POSE & GENTLE BREATHING ---
+      // --- IDLE POSE & GENTLE ORGANIC BREATHING ---
       const lerpFactor = Math.min(1.0, 10.0 * dt);
       const boneList = ['thighR', 'thighL', 'shinR', 'shinL', 'footR', 'footL', 'upper_armR', 'upper_armL', 'forearmR', 'forearmL'];
 
@@ -827,6 +945,8 @@ function updatePlayer(dt) {
       }
       if (hips && getP('hips')) {
         hips.position.y += (getP('hips').y + Math.sin(t * 2.4) * 0.012 - hips.position.y) * lerpFactor;
+        hips.position.x += ((getP('hips').x || 0) - hips.position.x) * lerpFactor;
+        hips.rotation.y += ((getR('hips')?.y || 0) - hips.rotation.y) * lerpFactor;
         hips.rotation.z += ((getR('hips')?.z || 0) - hips.rotation.z) * lerpFactor;
       }
       if (head && getR('head')) {

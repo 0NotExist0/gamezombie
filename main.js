@@ -734,31 +734,331 @@ function damageZombie(z, damage, dirX, dirZ) {
       player.grabbedBy = null;
     }
 
-    // Knockback impulse from punch direction
+    // Kinetic impact from punch direction
     let kx = dirX || 0;
     let kz = dirZ || 0;
     if (Math.hypot(kx, kz) < 0.01) {
       kx = -Math.sin(z.facingAngle);
       kz = -Math.cos(z.facingAngle);
     }
-    const punchImpulse = 6.8 + Math.random() * 2.2;
-    z.ragdoll = {
-      time: 0,
-      vx: kx * punchImpulse,
-      vy: 4.2, // Pop up into the air
-      vz: kz * punchImpulse,
-      pitch: 0,
-      pitchVel: -4.8, // Fall backward on back
-      roll: (Math.random() - 0.5) * 0.8,
-      rollVel: (Math.random() - 0.5) * 3.2,
-      limpFactor: 0,
-      settled: false
-    };
+    const punchImpulse = 9.5 + Math.random() * 3.0;
+    initZombieVerletRagdoll(z, kx, kz, punchImpulse);
 
     zombiesDefeated++;
     const countElem = document.getElementById('zombies-count');
     if (countElem) countElem.innerText = zombiesDefeated;
     playZombieDeath();
+  }
+}
+
+// -------------------------------------------------------------
+// VERLET MULTI-BODY RAGDOLL PHYSICS SIMULATOR
+// -------------------------------------------------------------
+const VEC_UP_Y = new THREE.Vector3(0, 1, 0);
+
+function initZombieVerletRagdoll(z, dirX, dirZ, punchForce) {
+  const cosF = Math.cos(z.facingAngle);
+  const sinF = Math.sin(z.facingAngle);
+
+  const toWorld = (lx, ly, lz) => new THREE.Vector3(
+    z.position.x + cosF * lx + sinF * lz,
+    z.position.y + ly,
+    z.position.z - sinF * lx + cosF * lz
+  );
+
+  const particles = {
+    hips: { pos: toWorld(0, 0.90, 0), oldPos: toWorld(0, 0.90, 0), mass: 2.2, radius: 0.18 },
+    chest: { pos: toWorld(0, 1.20, 0), oldPos: toWorld(0, 1.20, 0), mass: 2.0, radius: 0.18 },
+    head: { pos: toWorld(0, 1.55, 0.05), oldPos: toWorld(0, 1.55, 0.05), mass: 1.2, radius: 0.15 },
+
+    shoulderR: { pos: toWorld(0.26, 1.35, 0.02), oldPos: toWorld(0.26, 1.35, 0.02), mass: 0.7, radius: 0.10 },
+    elbowR: { pos: toWorld(0.32, 1.12, 0.10), oldPos: toWorld(0.32, 1.12, 0.10), mass: 0.6, radius: 0.09 },
+    handR: { pos: toWorld(0.34, 0.92, 0.20), oldPos: toWorld(0.34, 0.92, 0.20), mass: 0.5, radius: 0.08 },
+
+    shoulderL: { pos: toWorld(-0.26, 1.35, 0.02), oldPos: toWorld(-0.26, 1.35, 0.02), mass: 0.7, radius: 0.10 },
+    elbowL: { pos: toWorld(-0.32, 1.12, 0.10), oldPos: toWorld(-0.32, 1.12, 0.10), mass: 0.6, radius: 0.09 },
+    handL: { pos: toWorld(-0.34, 0.92, 0.20), oldPos: toWorld(-0.34, 0.92, 0.20), mass: 0.5, radius: 0.08 },
+
+    hipR: { pos: toWorld(0.14, 0.90, 0), oldPos: toWorld(0.14, 0.90, 0), mass: 1.1, radius: 0.12 },
+    kneeR: { pos: toWorld(0.14, 0.56, 0.07), oldPos: toWorld(0.14, 0.56, 0.07), mass: 0.9, radius: 0.10 },
+    footR: { pos: toWorld(0.14, 0.20, 0.04), oldPos: toWorld(0.14, 0.20, 0.04), mass: 0.8, radius: 0.10 },
+
+    hipL: { pos: toWorld(-0.14, 0.90, 0), oldPos: toWorld(-0.14, 0.90, 0), mass: 1.1, radius: 0.12 },
+    kneeL: { pos: toWorld(-0.14, 0.56, 0.07), oldPos: toWorld(-0.14, 0.56, 0.07), mass: 0.9, radius: 0.10 },
+    footL: { pos: toWorld(-0.14, 0.20, 0.04), oldPos: toWorld(-0.14, 0.20, 0.04), mass: 0.8, radius: 0.10 }
+  };
+
+  // Kinetic Impulse applied directly to impact points (Head & Chest)
+  const dtSim = 1 / 60;
+  const kHead = punchForce * 1.35;
+  particles.head.oldPos.x -= dirX * kHead * dtSim;
+  particles.head.oldPos.z -= dirZ * kHead * dtSim;
+  particles.head.oldPos.y -= 0.18; // upward head snap
+
+  const kChest = punchForce * 1.10;
+  particles.chest.oldPos.x -= dirX * kChest * dtSim;
+  particles.chest.oldPos.z -= dirZ * kChest * dtSim;
+  particles.chest.oldPos.y -= 0.14;
+
+  const kHips = punchForce * 0.70;
+  particles.hips.oldPos.x -= dirX * kHips * dtSim;
+  particles.hips.oldPos.z -= dirZ * kHips * dtSim;
+  particles.hips.oldPos.y -= 0.06;
+
+  // Wild asymmetric limb flail momentum
+  const flailR = (Math.random() - 0.5) * 4.0;
+  const flailL = (Math.random() - 0.5) * 4.0;
+  particles.handR.oldPos.x -= (dirX * punchForce * 0.8 + flailR) * dtSim;
+  particles.handR.oldPos.y -= (2.5 + Math.random() * 2.0) * dtSim;
+  particles.handR.oldPos.z -= (dirZ * punchForce * 0.8 - flailR) * dtSim;
+
+  particles.handL.oldPos.x -= (dirX * punchForce * 0.8 + flailL) * dtSim;
+  particles.handL.oldPos.y -= (2.5 + Math.random() * 2.0) * dtSim;
+  particles.handL.oldPos.z -= (dirZ * punchForce * 0.8 - flailL) * dtSim;
+
+  const dist = (p1, p2) => p1.pos.distanceTo(p2.pos);
+  const constraints = [
+    // Spine
+    ['hips', 'chest', dist(particles.hips, particles.chest)],
+    ['chest', 'head', dist(particles.chest, particles.head)],
+    ['hips', 'head', dist(particles.hips, particles.head)],
+
+    // Right Arm
+    ['chest', 'shoulderR', dist(particles.chest, particles.shoulderR)],
+    ['shoulderR', 'elbowR', dist(particles.shoulderR, particles.elbowR)],
+    ['elbowR', 'handR', dist(particles.elbowR, particles.handR)],
+
+    // Left Arm
+    ['chest', 'shoulderL', dist(particles.chest, particles.shoulderL)],
+    ['shoulderL', 'elbowL', dist(particles.shoulderL, particles.elbowL)],
+    ['elbowL', 'handL', dist(particles.elbowL, particles.handL)],
+
+    // Shoulder bridge
+    ['shoulderR', 'shoulderL', dist(particles.shoulderR, particles.shoulderL)],
+
+    // Pelvis
+    ['hips', 'hipR', dist(particles.hips, particles.hipR)],
+    ['hips', 'hipL', dist(particles.hips, particles.hipL)],
+    ['hipR', 'hipL', dist(particles.hipR, particles.hipL)],
+
+    // Legs
+    ['hipR', 'kneeR', dist(particles.hipR, particles.kneeR)],
+    ['kneeR', 'footR', dist(particles.kneeR, particles.footR)],
+    ['hipL', 'kneeL', dist(particles.hipL, particles.kneeL)],
+    ['kneeL', 'footL', dist(particles.kneeL, particles.footL)],
+
+    // Structural Cross Bracing (prevents origami inversion)
+    ['kneeR', 'kneeL', dist(particles.kneeR, particles.kneeL)],
+    ['chest', 'hipR', dist(particles.chest, particles.hipR)],
+    ['chest', 'hipL', dist(particles.chest, particles.hipL)]
+  ];
+
+  z.verletRagdoll = {
+    particles,
+    constraints,
+    settled: false,
+    time: 0
+  };
+}
+
+function updateZombieVerletPhysics(z, dt) {
+  const rag = z.verletRagdoll;
+  if (!rag) return;
+  rag.time += dt;
+
+  const gravity = -22.0;
+  const damping = 0.985;
+  const subSteps = 2;
+  const sdt = dt / subSteps;
+
+  if (!rag.settled) {
+    for (let step = 0; step < subSteps; step++) {
+      // 1. Verlet particle integration
+      for (const name in rag.particles) {
+        const p = rag.particles[name];
+        const vx = (p.pos.x - p.oldPos.x) * damping;
+        let vy = (p.pos.y - p.oldPos.y) * damping + gravity * sdt * sdt;
+        const vz = (p.pos.z - p.oldPos.z) * damping;
+
+        p.oldPos.copy(p.pos);
+
+        p.pos.x += vx;
+        p.pos.y += vy;
+        p.pos.z += vz;
+
+        // 3D Terrain Collision per particle
+        const gY = getTerrainHeight(p.pos.x, p.pos.z);
+        const floorY = gY + p.radius;
+        if (p.pos.y < floorY) {
+          p.pos.y = floorY;
+          // Ground friction & slide
+          p.oldPos.x += (p.pos.x - p.oldPos.x) * 0.55;
+          p.oldPos.z += (p.pos.z - p.oldPos.z) * 0.55;
+          // Inelastic bounce
+          if (p.pos.y - p.oldPos.y < -0.04) {
+            p.oldPos.y = p.pos.y + (p.pos.y - p.oldPos.y) * 0.22;
+          }
+        }
+      }
+
+      // 2. Distance constraint relaxation
+      for (let iter = 0; iter < 8; iter++) {
+        for (let c = 0; c < rag.constraints.length; c++) {
+          const [n1, n2, targetDist] = rag.constraints[c];
+          const p1 = rag.particles[n1];
+          const p2 = rag.particles[n2];
+
+          const dx = p2.pos.x - p1.pos.x;
+          const dy = p2.pos.y - p1.pos.y;
+          const dz = p2.pos.z - p1.pos.z;
+          const curDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (curDist > 0.0001) {
+            const diff = (curDist - targetDist) / curDist;
+            const w1 = 1.0 / p1.mass;
+            const w2 = 1.0 / p2.mass;
+            const invTotal = 1.0 / (w1 + w2);
+
+            p1.pos.x += dx * diff * w1 * invTotal;
+            p1.pos.y += dy * diff * w1 * invTotal;
+            p1.pos.z += dz * diff * w1 * invTotal;
+
+            p2.pos.x -= dx * diff * w2 * invTotal;
+            p2.pos.y -= dy * diff * w2 * invTotal;
+            p2.pos.z -= dz * diff * w2 * invTotal;
+
+            const f1 = getTerrainHeight(p1.pos.x, p1.pos.z) + p1.radius;
+            if (p1.pos.y < f1) p1.pos.y = f1;
+            const f2 = getTerrainHeight(p2.pos.x, p2.pos.z) + p2.radius;
+            if (p2.pos.y < f2) p2.pos.y = f2;
+          }
+        }
+      }
+    }
+
+    if (rag.time > 2.5) {
+      let maxVelSq = 0;
+      for (const name in rag.particles) {
+        const p = rag.particles[name];
+        const vSq = p.pos.distanceToSquared(p.oldPos);
+        if (vSq > maxVelSq) maxVelSq = vSq;
+      }
+      if (maxVelSq < 0.0004) {
+        rag.settled = true;
+      }
+    }
+  }
+
+  // 3. Update 3D Armature Bones from Physical Particles
+  const pts = rag.particles;
+  const bones = z.bones;
+  const getZB = (name) => bones[name] || bones[name.replace(/\./g, '')];
+
+  z.group.position.set(0, 0, 0);
+  z.group.rotation.set(0, 0, 0);
+  z.model.position.set(0, 0, 0);
+  z.model.rotation.set(0, 0, 0);
+
+  const hips = getZB('hips');
+  const chest = getZB('chest');
+  const head = getZB('head');
+  const thighR = getZB('thighR');
+  const thighL = getZB('thighL');
+  const shinR = getZB('shinR');
+  const shinL = getZB('shinL');
+  const armR = getZB('upper_armR');
+  const armL = getZB('upper_armL');
+  const foreR = getZB('forearmR');
+  const foreL = getZB('forearmL');
+
+  if (hips) {
+    hips.position.copy(pts.hips.pos);
+
+    // Hips basis: Up points towards chest, Right points towards hipR - hipL
+    const upH = pts.chest.pos.clone().sub(pts.hips.pos).normalize();
+    const rightH = pts.hipR.pos.clone().sub(pts.hipL.pos).normalize();
+    const fwdH = new THREE.Vector3().crossVectors(rightH, upH).normalize();
+    rightH.crossVectors(upH, fwdH).normalize();
+    const mHips = new THREE.Matrix4().makeBasis(rightH, upH, fwdH);
+    hips.quaternion.setFromRotationMatrix(mHips);
+
+    // Chest: oriented towards head
+    if (chest) {
+      const upC = pts.head.pos.clone().sub(pts.chest.pos).normalize();
+      const rightC = pts.shoulderR.pos.clone().sub(pts.shoulderL.pos).normalize();
+      const fwdC = new THREE.Vector3().crossVectors(rightC, upC).normalize();
+      rightC.crossVectors(upC, fwdC).normalize();
+      const mChest = new THREE.Matrix4().makeBasis(rightC, upC, fwdC);
+      const qChestWorld = new THREE.Quaternion().setFromRotationMatrix(mChest);
+      chest.quaternion.copy(hips.quaternion.clone().invert().multiply(qChestWorld));
+    }
+
+    if (head) {
+      head.quaternion.identity();
+    }
+
+    // Legs: Thigh.R points from hipR to kneeR
+    if (thighR) {
+      const vThighR = pts.kneeR.pos.clone().sub(pts.hipR.pos).normalize();
+      const qThighRWorld = new THREE.Quaternion().setFromUnitVectors(VEC_UP_Y, vThighR);
+      thighR.quaternion.copy(hips.quaternion.clone().invert().multiply(qThighRWorld));
+
+      if (shinR) {
+        const vShinR = pts.footR.pos.clone().sub(pts.kneeR.pos).normalize();
+        const qShinRWorld = new THREE.Quaternion().setFromUnitVectors(VEC_UP_Y, vShinR);
+        shinR.quaternion.copy(qThighRWorld.clone().invert().multiply(qShinRWorld));
+      }
+    }
+
+    // Thigh.L points from hipL to kneeL
+    if (thighL) {
+      const vThighL = pts.kneeL.pos.clone().sub(pts.hipL.pos).normalize();
+      const qThighLWorld = new THREE.Quaternion().setFromUnitVectors(VEC_UP_Y, vThighL);
+      thighL.quaternion.copy(hips.quaternion.clone().invert().multiply(qThighLWorld));
+
+      if (shinL) {
+        const vShinL = pts.footL.pos.clone().sub(pts.kneeL.pos).normalize();
+        const qShinLWorld = new THREE.Quaternion().setFromUnitVectors(VEC_UP_Y, vShinL);
+        shinL.quaternion.copy(qThighLWorld.clone().invert().multiply(qShinLWorld));
+      }
+    }
+
+    // Arms: Upper Arm R points from shoulderR to elbowR
+    if (armR && chest) {
+      const vArmR = pts.elbowR.pos.clone().sub(pts.shoulderR.pos).normalize();
+      const qArmRWorld = new THREE.Quaternion().setFromUnitVectors(VEC_UP_Y, vArmR);
+      const qChestWorld = hips.quaternion.clone().multiply(chest.quaternion);
+      armR.quaternion.copy(qChestWorld.clone().invert().multiply(qArmRWorld));
+
+      if (foreR) {
+        const vForeR = pts.handR.pos.clone().sub(pts.elbowR.pos).normalize();
+        const qForeRWorld = new THREE.Quaternion().setFromUnitVectors(VEC_UP_Y, vForeR);
+        foreR.quaternion.copy(qArmRWorld.clone().invert().multiply(qForeRWorld));
+      }
+    }
+
+    // Upper Arm L points from shoulderL to elbowL
+    if (armL && chest) {
+      const vArmL = pts.elbowL.pos.clone().sub(pts.shoulderL.pos).normalize();
+      const qArmLWorld = new THREE.Quaternion().setFromUnitVectors(VEC_UP_Y, vArmL);
+      const qChestWorld = hips.quaternion.clone().multiply(chest.quaternion);
+      armL.quaternion.copy(qChestWorld.clone().invert().multiply(qArmLWorld));
+
+      if (foreL) {
+        const vForeL = pts.handL.pos.clone().sub(pts.elbowL.pos).normalize();
+        const qForeLWorld = new THREE.Quaternion().setFromUnitVectors(VEC_UP_Y, vForeL);
+        foreL.quaternion.copy(qArmLWorld.clone().invert().multiply(qForeLWorld));
+      }
+    }
+  }
+
+  // After 3.5 seconds corpse sinks into the ground
+  if (z.deathTimer > 3.5) {
+    for (const name in pts) {
+      pts[name].pos.y -= 0.35 * dt;
+    }
+    if (z.deathTimer > 5.5 && z.group.parent) {
+      scene.remove(z.group);
+    }
   }
 }
 
@@ -772,146 +1072,14 @@ function updateZombies(dt) {
     }
 
     // -------------------------------------------------------------
-    // 1. DEAD ZOMBIE RAGDOLL PHYSICS SIMULATION
+    // 1. DEAD ZOMBIE REAL VERLET RAGDOLL PHYSICS SIMULATION
     // -------------------------------------------------------------
     if (z.isDead) {
       z.deathTimer += dt;
-      if (!z.ragdoll) {
-        z.ragdoll = {
-          time: z.deathTimer,
-          vx: 0, vy: 0, vz: 0,
-          pitch: -Math.PI * 0.48, pitchVel: 0,
-          roll: 0, rollVel: 0,
-          limpFactor: 1.0, settled: true
-        };
+      if (!z.verletRagdoll) {
+        initZombieVerletRagdoll(z, -Math.sin(z.facingAngle), -Math.cos(z.facingAngle), 8.0);
       }
-      const rag = z.ragdoll;
-      rag.time += dt;
-
-      if (!rag.settled) {
-        // Gravity acceleration
-        rag.vy -= 24.0 * dt;
-        z.position.x += rag.vx * dt;
-        z.position.z += rag.vz * dt;
-        z.position.y += rag.vy * dt;
-
-        const groundY = getTerrainHeight(z.position.x, z.position.z);
-        // Hips resting elevation slightly above ground
-        const floorY = groundY + 0.12;
-
-        if (z.position.y <= floorY) {
-          z.position.y = floorY;
-          if (rag.vy < -1.6) {
-            rag.vy = -rag.vy * 0.24; // Elastic thud bounce
-            rag.vx *= 0.65;
-            rag.vz *= 0.65;
-            rag.pitchVel *= 0.5;
-            rag.rollVel *= 0.5;
-          } else {
-            rag.vy = 0;
-            rag.vx *= Math.pow(0.001, dt);
-            rag.vz *= Math.pow(0.001, dt);
-            rag.pitchVel *= Math.pow(0.01, dt);
-            rag.rollVel *= Math.pow(0.01, dt);
-          }
-        }
-
-        // Whole-body tumble & pitch onto ground
-        rag.pitch += rag.pitchVel * dt;
-        rag.roll += rag.rollVel * dt;
-        if (rag.pitch < -Math.PI * 0.48) {
-          rag.pitch = -Math.PI * 0.48; // flat on back
-          rag.pitchVel = 0;
-        }
-
-        z.model.rotation.x = rag.pitch;
-        z.model.rotation.z = rag.roll;
-
-        // Progressive limp factor of joints
-        rag.limpFactor = Math.min(1.0, rag.time * 4.2);
-        const limp = rag.limpFactor;
-
-        // Bone-by-bone limp joint collapse (preserving all rest rotations!)
-        const bones = z.bones;
-        const rest = z.restRotations;
-        const getZB = (name) => bones[name] || bones[name.replace(/\./g, '')];
-        const getZR = (name) => rest[name] || rest[name.replace(/\./g, '')];
-
-        const chest = getZB('chest');
-        const head = getZB('head');
-        const armR = getZB('upper_armR');
-        const armL = getZB('upper_armL');
-        const foreR = getZB('forearmR');
-        const foreL = getZB('forearmL');
-        const thighR = getZB('thighR');
-        const thighL = getZB('thighL');
-        const shinR = getZB('shinR');
-        const shinL = getZB('shinL');
-
-        // Spine and head slump backward & sideways onto ground
-        if (chest && getZR('chest')) {
-          chest.rotation.x = (getZR('chest').x || 0) - limp * 0.35;
-          chest.rotation.y = (getZR('chest').y || 0) + limp * (rag.roll * 0.35);
-          chest.rotation.z = (getZR('chest').z || 0);
-        }
-        if (head && getZR('head')) {
-          head.rotation.x = (getZR('head').x || 0) - limp * 0.50;
-          head.rotation.z = (getZR('head').z || 0) + limp * 0.42;
-        }
-
-        // Arms fall limp and loose to the ground
-        if (armR && getZR('upper_armR')) {
-          armR.rotation.x = getZR('upper_armR').x + limp * 0.40;
-          armR.rotation.y = getZR('upper_armR').y + limp * 0.35;
-          armR.rotation.z = (getZR('upper_armR').z || 0) + limp * 0.20;
-        }
-        if (foreR && getZR('forearmR')) {
-          foreR.rotation.x = getZR('forearmR').x + limp * 0.50;
-          foreR.rotation.y = getZR('forearmR').y;
-          foreR.rotation.z = getZR('forearmR').z;
-        }
-
-        if (armL && getZR('upper_armL')) {
-          armL.rotation.x = getZR('upper_armL').x - limp * 0.40;
-          armL.rotation.y = getZR('upper_armL').y - limp * 0.35;
-          armL.rotation.z = (getZR('upper_armL').z || 0) - limp * 0.20;
-        }
-        if (foreL && getZR('forearmL')) {
-          foreL.rotation.x = getZR('forearmL').x + limp * 0.50;
-          foreL.rotation.y = getZR('forearmL').y;
-          foreL.rotation.z = getZR('forearmL').z;
-        }
-
-        // Knees buckle and legs splay outward (relative to rest rotations!)
-        if (thighR && getZR('thighR')) {
-          thighR.rotation.x = getZR('thighR').x + limp * 0.26;
-          thighR.rotation.z = (getZR('thighR').z || 0) + limp * 0.22;
-        }
-        if (shinR && getZR('shinR')) {
-          shinR.rotation.x = getZR('shinR').x + limp * 0.60;
-        }
-
-        if (thighL && getZR('thighL')) {
-          thighL.rotation.x = getZR('thighL').x + limp * 0.20;
-          thighL.rotation.z = (getZR('thighL').z || 0) - limp * 0.22;
-        }
-        if (shinL && getZR('shinL')) {
-          shinL.rotation.x = getZR('shinL').x + limp * 0.50;
-        }
-
-        if (rag.time > 2.0 && Math.abs(rag.vy) < 0.05 && Math.abs(rag.vx) < 0.05 && Math.abs(rag.vz) < 0.05) {
-          rag.settled = true;
-        }
-      } else {
-        // Settled corpse slowly sinks after 3.2s
-        if (z.deathTimer > 3.2) {
-          z.position.y -= 0.35 * dt;
-          if (z.deathTimer > 5.5 && z.group.parent) {
-            scene.remove(z.group);
-          }
-        }
-      }
-      z.group.position.copy(z.position);
+      updateZombieVerletPhysics(z, dt);
       continue;
     }
 

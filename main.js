@@ -721,6 +721,12 @@ function damageZombie(z, damage, dirX, dirZ) {
   if (z.hp <= 0 && !z.isDead) {
     z.isDead = true;
     z.deathTimer = 0;
+    z.state = 'dead';
+
+    // Hide health bar immediately
+    if (z.healthBar && z.healthBar.barGroup) {
+      z.healthBar.barGroup.visible = false;
+    }
 
     // Release player immediately if attached
     if (player.grabbedBy === z) {
@@ -728,14 +734,23 @@ function damageZombie(z, damage, dirX, dirZ) {
       player.grabbedBy = null;
     }
 
-    // Initialize physical ragdoll parameters
-    const impulse = 4.2 + Math.random() * 2.0;
+    // Knockback impulse from punch direction
+    let kx = dirX || 0;
+    let kz = dirZ || 0;
+    if (Math.hypot(kx, kz) < 0.01) {
+      kx = -Math.sin(z.facingAngle);
+      kz = -Math.cos(z.facingAngle);
+    }
+    const punchImpulse = 6.8 + Math.random() * 2.2;
     z.ragdoll = {
       time: 0,
-      vx: dirX * impulse,
-      vy: 2.8,
-      vz: dirZ * impulse,
-      rotZ: (Math.random() - 0.5) * 0.9,
+      vx: kx * punchImpulse,
+      vy: 4.2, // Pop up into the air
+      vz: kz * punchImpulse,
+      pitch: 0,
+      pitchVel: -4.8, // Fall backward on back
+      roll: (Math.random() - 0.5) * 0.8,
+      rollVel: (Math.random() - 0.5) * 3.2,
       limpFactor: 0,
       settled: false
     };
@@ -751,8 +766,8 @@ function updateZombies(dt) {
   for (let i = 0; i < zombies.length; i++) {
     const z = zombies[i];
 
-    // Orient health bar towards current camera
-    if (z.healthBar && z.healthBar.barGroup) {
+    // Orient health bar towards current camera (if visible)
+    if (z.healthBar && z.healthBar.barGroup && z.healthBar.barGroup.visible) {
       z.healthBar.barGroup.quaternion.copy(camera.quaternion);
     }
 
@@ -761,39 +776,62 @@ function updateZombies(dt) {
     // -------------------------------------------------------------
     if (z.isDead) {
       z.deathTimer += dt;
-      const rag = z.ragdoll || {
-        time: z.deathTimer,
-        vx: 0, vy: 0, vz: 0, rotZ: 0, limpFactor: 1, settled: true
-      };
+      if (!z.ragdoll) {
+        z.ragdoll = {
+          time: z.deathTimer,
+          vx: 0, vy: 0, vz: 0,
+          pitch: -Math.PI * 0.48, pitchVel: 0,
+          roll: 0, rollVel: 0,
+          limpFactor: 1.0, settled: true
+        };
+      }
+      const rag = z.ragdoll;
       rag.time += dt;
 
       if (!rag.settled) {
-        // Gravity & position integration
-        rag.vy -= 26.0 * dt;
+        // Gravity acceleration
+        rag.vy -= 24.0 * dt;
         z.position.x += rag.vx * dt;
         z.position.z += rag.vz * dt;
         z.position.y += rag.vy * dt;
 
         const groundY = getTerrainHeight(z.position.x, z.position.z);
-        if (z.position.y <= groundY) {
-          z.position.y = groundY;
-          rag.vx *= Math.pow(0.005, dt);
-          rag.vz *= Math.pow(0.005, dt);
-          if (rag.vy < -1.8) {
-            rag.vy = -rag.vy * 0.22; // subtle bounce
+        // Hips resting elevation slightly above ground
+        const floorY = groundY + 0.12;
+
+        if (z.position.y <= floorY) {
+          z.position.y = floorY;
+          if (rag.vy < -1.6) {
+            rag.vy = -rag.vy * 0.24; // Elastic thud bounce
+            rag.vx *= 0.65;
+            rag.vz *= 0.65;
+            rag.pitchVel *= 0.5;
+            rag.rollVel *= 0.5;
           } else {
             rag.vy = 0;
+            rag.vx *= Math.pow(0.001, dt);
+            rag.vz *= Math.pow(0.001, dt);
+            rag.pitchVel *= Math.pow(0.01, dt);
+            rag.rollVel *= Math.pow(0.01, dt);
           }
         }
 
-        // Progression of joint limpness
-        rag.limpFactor = Math.min(1.0, rag.time * 3.8);
+        // Whole-body tumble & pitch onto ground
+        rag.pitch += rag.pitchVel * dt;
+        rag.roll += rag.rollVel * dt;
+        if (rag.pitch < -Math.PI * 0.48) {
+          rag.pitch = -Math.PI * 0.48; // flat on back
+          rag.pitchVel = 0;
+        }
 
-        // Whole body tumble and tilt
-        z.model.rotation.x = -Math.min(Math.PI / 2, rag.time * 3.4);
-        z.model.rotation.z = rag.rotZ * (1.0 - rag.limpFactor * 0.4);
+        z.model.rotation.x = rag.pitch;
+        z.model.rotation.z = rag.roll;
 
-        // Bone-by-bone ragdoll joint collapse
+        // Progressive limp factor of joints
+        rag.limpFactor = Math.min(1.0, rag.time * 4.2);
+        const limp = rag.limpFactor;
+
+        // Bone-by-bone limp joint collapse (preserving all rest rotations!)
         const bones = z.bones;
         const rest = z.restRotations;
         const getZB = (name) => bones[name] || bones[name.replace(/\./g, '')];
@@ -810,39 +848,65 @@ function updateZombies(dt) {
         const shinR = getZB('shinR');
         const shinL = getZB('shinL');
 
-        // Spine and head slump backward
-        if (chest && getZR('chest')) chest.rotation.x = (getZR('chest').x || 0) - 0.60 * rag.limpFactor;
+        // Spine and head slump backward & sideways onto ground
+        if (chest && getZR('chest')) {
+          chest.rotation.x = (getZR('chest').x || 0) - limp * 0.35;
+          chest.rotation.y = (getZR('chest').y || 0) + limp * (rag.roll * 0.35);
+          chest.rotation.z = (getZR('chest').z || 0);
+        }
         if (head && getZR('head')) {
-          head.rotation.x = -0.55 * rag.limpFactor;
-          head.rotation.z = 0.40 * rag.limpFactor;
+          head.rotation.x = (getZR('head').x || 0) - limp * 0.50;
+          head.rotation.z = (getZR('head').z || 0) + limp * 0.42;
         }
 
-        // Arms fall limp and loose with gravity
+        // Arms fall limp and loose to the ground
         if (armR && getZR('upper_armR')) {
-          armR.rotation.y = getZR('upper_armR').y + 0.50 * rag.limpFactor;
-          armR.rotation.x = getZR('upper_armR').x + 0.60 * rag.limpFactor;
+          armR.rotation.x = getZR('upper_armR').x + limp * 0.40;
+          armR.rotation.y = getZR('upper_armR').y + limp * 0.35;
+          armR.rotation.z = (getZR('upper_armR').z || 0) + limp * 0.20;
         }
+        if (foreR && getZR('forearmR')) {
+          foreR.rotation.x = getZR('forearmR').x + limp * 0.50;
+          foreR.rotation.y = getZR('forearmR').y;
+          foreR.rotation.z = getZR('forearmR').z;
+        }
+
         if (armL && getZR('upper_armL')) {
-          armL.rotation.y = getZR('upper_armL').y + 0.50 * rag.limpFactor;
-          armL.rotation.x = getZR('upper_armL').x - 0.60 * rag.limpFactor;
+          armL.rotation.x = getZR('upper_armL').x - limp * 0.40;
+          armL.rotation.y = getZR('upper_armL').y - limp * 0.35;
+          armL.rotation.z = (getZR('upper_armL').z || 0) - limp * 0.20;
         }
-        if (foreR) foreR.rotation.x = 0.55 * rag.limpFactor;
-        if (foreL) foreL.rotation.x = 0.55 * rag.limpFactor;
+        if (foreL && getZR('forearmL')) {
+          foreL.rotation.x = getZR('forearmL').x + limp * 0.50;
+          foreL.rotation.y = getZR('forearmL').y;
+          foreL.rotation.z = getZR('forearmL').z;
+        }
 
-        // Knees buckle and legs splay outward as hips strike ground
-        if (thighR) thighR.rotation.x = 0.38 * rag.limpFactor;
-        if (thighL) thighL.rotation.x = 0.28 * rag.limpFactor;
-        if (shinR) shinR.rotation.x = 0.78 * rag.limpFactor;
-        if (shinL) shinL.rotation.x = 0.68 * rag.limpFactor;
+        // Knees buckle and legs splay outward (relative to rest rotations!)
+        if (thighR && getZR('thighR')) {
+          thighR.rotation.x = getZR('thighR').x + limp * 0.26;
+          thighR.rotation.z = (getZR('thighR').z || 0) + limp * 0.22;
+        }
+        if (shinR && getZR('shinR')) {
+          shinR.rotation.x = getZR('shinR').x + limp * 0.60;
+        }
 
-        if (rag.time > 1.8 && Math.abs(rag.vy) < 0.1) {
+        if (thighL && getZR('thighL')) {
+          thighL.rotation.x = getZR('thighL').x + limp * 0.20;
+          thighL.rotation.z = (getZR('thighL').z || 0) - limp * 0.22;
+        }
+        if (shinL && getZR('shinL')) {
+          shinL.rotation.x = getZR('shinL').x + limp * 0.50;
+        }
+
+        if (rag.time > 2.0 && Math.abs(rag.vy) < 0.05 && Math.abs(rag.vx) < 0.05 && Math.abs(rag.vz) < 0.05) {
           rag.settled = true;
         }
       } else {
-        // Settled corpse sinks into the ground after 2.5s
-        if (z.deathTimer > 2.5) {
-          z.position.y -= 0.45 * dt;
-          if (z.deathTimer > 4.5 && z.group.parent) {
+        // Settled corpse slowly sinks after 3.2s
+        if (z.deathTimer > 3.2) {
+          z.position.y -= 0.35 * dt;
+          if (z.deathTimer > 5.5 && z.group.parent) {
             scene.remove(z.group);
           }
         }
@@ -879,25 +943,54 @@ function updateZombies(dt) {
     const distToPlayer = Math.sqrt(dx * dx + dz * dz);
 
     // -------------------------------------------------------------
-    // 3. GRAB / LATCH ATTACK STATE (RAGDOLL ARMS + 2-BONE IK LEGS)
+    // 3. GRAB ATTACK: ACTIVE RAGDOLL TETHER + 2-BONE IK LEGS
     // -------------------------------------------------------------
     if (z.state === 'grab') {
-      // 1. Zombie locked tightly in front of player
+      if (!z.grabRagdoll) {
+        z.grabRagdoll = {
+          swayX: 0,
+          swayZ: 0
+        };
+      }
+      const gr = z.grabRagdoll;
+
+      // 1. Elastic Physical Anchor in front of player
       const pFwdX = Math.sin(player.facingAngle);
       const pFwdZ = Math.cos(player.facingAngle);
-      const targetX = player.position.x + pFwdX * 0.95;
-      const targetZ = player.position.z + pFwdZ * 0.95;
+      const anchorDist = 0.90;
+      const targetX = player.position.x + pFwdX * anchorDist;
+      const targetZ = player.position.z + pFwdZ * anchorDist;
 
-      z.position.x += (targetX - z.position.x) * Math.min(1.0, 18.0 * dt);
-      z.position.z += (targetZ - z.position.z) * Math.min(1.0, 18.0 * dt);
+      // Spring-damper physics pulling zombie toward anchor
+      const springK = 85.0;
+      const damping = 14.0;
+      const errX = targetX - z.position.x;
+      const errZ = targetZ - z.position.z;
+
+      z.velocity.x += (errX * springK - z.velocity.x * damping) * dt;
+      z.velocity.z += (errZ * springK - z.velocity.z * damping) * dt;
+
+      z.position.x += z.velocity.x * dt;
+      z.position.z += z.velocity.z * dt;
+
+      // Hard tether clamp
+      const curDist = Math.sqrt((z.position.x - player.position.x) ** 2 + (z.position.z - player.position.z) ** 2);
+      if (curDist > 1.30) {
+        const clampRatio = 1.30 / curDist;
+        z.position.x = player.position.x + (z.position.x - player.position.x) * clampRatio;
+        z.position.z = player.position.z + (z.position.z - player.position.z) * clampRatio;
+      }
       z.position.y = getTerrainHeight(z.position.x, z.position.z);
 
       // Face towards player
-      z.facingAngle = Math.atan2(-pFwdX, -pFwdZ);
+      const toPlayerX = player.position.x - z.position.x;
+      const toPlayerZ = player.position.z - z.position.z;
+      z.facingAngle = Math.atan2(toPlayerX, toPlayerZ);
+
       z.group.position.copy(z.position);
       z.group.rotation.y = z.facingAngle;
 
-      // 2. Continuous player health drain
+      // 2. Continuous player health drain & bite sounds
       player.hp = Math.max(0, player.hp - 11.0 * dt);
       z.biteTimer += dt;
       if (z.biteTimer >= 0.42) {
@@ -922,25 +1015,41 @@ function updateZombies(dt) {
         player.grabbedBy = null;
         z.grabCooldown = 3.2; // Grace period
         z.struggleTimer = 0;
+        z.grabRagdoll = null;
+        z.model.rotation.set(0, 0, 0);
 
         // Push zombie away violently
         z.velocity.x = pFwdX * 9.5;
         z.velocity.z = pFwdZ * 9.5;
         playZombieBreakOff();
+        continue;
       }
 
-      // 4. Ragdoll arms locked onto player's shoulders + 2-Bone IK legs
+      // 4. "FISICA ATTIVA": Active Ragdoll Body Sway & Limb Inertia
+      const cosF = Math.cos(z.facingAngle);
+      const sinF = Math.sin(z.facingAngle);
+      // Local lateral and forward velocities
+      const localVelX = cosF * z.velocity.x - sinF * z.velocity.z;
+      const localVelZ = sinF * z.velocity.x + cosF * z.velocity.z;
+
+      // Active torso tilt & swing from drag forces
+      gr.swayX += (-localVelX * 0.16 - gr.swayX) * Math.min(1.0, 12.0 * dt);
+      gr.swayZ += (localVelZ * 0.14 - gr.swayZ) * Math.min(1.0, 12.0 * dt);
+
+      z.model.rotation.z = gr.swayX; // Torso rolls sideways when dragged
+      z.model.rotation.x = gr.swayZ; // Torso leans forward/backward
+
       const bones = z.bones;
       const rest = z.restRotations;
       const getZB = (name) => bones[name] || bones[name.replace(/\./g, '')];
       const getZR = (name) => rest[name] || rest[name.replace(/\./g, '')];
 
+      const chest = getZB('chest');
+      const head = getZB('head');
       const armR = getZB('upper_armR');
       const armL = getZB('upper_armL');
       const foreR = getZB('forearmR');
       const foreL = getZB('forearmL');
-      const chest = getZB('chest');
-      const head = getZB('head');
       const thighR = getZB('thighR');
       const thighL = getZB('thighL');
       const shinR = getZB('shinR');
@@ -949,57 +1058,76 @@ function updateZombies(dt) {
       const footL = getZB('footL');
 
       const time = clock.getElapsedTime();
-      const tremble = Math.sin(time * 20.0) * 0.06;
+      const tremble = Math.sin(time * 24.0) * 0.04;
+      const tension = Math.max(-0.20, Math.min(0.30, (curDist - 0.90) * 0.9));
 
-      // Arms: Ragdoll grip wrapped around player's neck/shoulders
-      if (armR && getZR('upper_armR')) {
-        armR.rotation.y = getZR('upper_armR').y - 1.58;
-        armR.rotation.x = getZR('upper_armR').x + 0.22 + tremble;
-        armR.rotation.z = 0.42;
-      }
-      if (foreR) foreR.rotation.x = -0.72 + tremble;
-
-      if (armL && getZR('upper_armL')) {
-        armL.rotation.y = getZR('upper_armL').y - 1.58;
-        armL.rotation.x = getZR('upper_armL').x - 0.22 - tremble;
-        armL.rotation.z = -0.42;
-      }
-      if (foreL) foreL.rotation.x = -0.72 - tremble;
-
-      // Chest lunges forward with biting struggle
+      // Spine & Head dynamic reactive ragdoll:
       if (chest && getZR('chest')) {
-        chest.rotation.x = -0.32;
-        chest.rotation.y = Math.sin(time * 12.0) * 0.10;
+        chest.rotation.x = (getZR('chest').x || 0) - 0.22 + gr.swayZ * 0.4;
+        chest.rotation.y = (getZR('chest').y || 0) + gr.swayX * 0.5 + Math.sin(time * 16.0) * 0.06;
+        chest.rotation.z = (getZR('chest').z || 0) - gr.swayX * 0.3;
       }
       if (head && getZR('head')) {
-        head.rotation.x = 0.30 + Math.sin(time * 14.0) * 0.18;
+        head.rotation.x = (getZR('head').x || 0) + 0.22 - gr.swayZ * 0.6 + Math.sin(time * 20.0) * 0.12;
+        head.rotation.y = (getZR('head').y || 0) - gr.swayX * 0.6;
+        head.rotation.z = (getZR('head').z || 0) + gr.swayX * 0.4 + Math.sin(time * 18.0) * 0.05;
       }
 
-      // LEGS BECOME 2-BONE IK:
-      // Sample exact terrain slope under each foot
-      const groundY = z.position.y;
-      const footOffsetSide = 0.16;
-      const cosZ = Math.cos(z.facingAngle);
-      const sinZ = Math.sin(z.facingAngle);
+      // RAGDOLL ARMS: Wrap around player's shoulders (NO head clipping!)
+      // Right arm: reaches forward and clasp left shoulder
+      if (armR && getZR('upper_armR')) {
+        armR.rotation.x = getZR('upper_armR').x + 0.10 + tremble;
+        armR.rotation.y = getZR('upper_armR').y - 1.45 - tension * 0.3 + gr.swayX * 0.25;
+        armR.rotation.z = (getZR('upper_armR').z || 0) + 0.10;
+      }
+      if (foreR && getZR('forearmR')) {
+        foreR.rotation.x = getZR('forearmR').x + 0.36 - tension + tremble;
+        foreR.rotation.y = getZR('forearmR').y;
+        foreR.rotation.z = getZR('forearmR').z;
+      }
 
-      const fXR = z.position.x + cosZ * footOffsetSide;
-      const fZR = z.position.z - sinZ * footOffsetSide;
-      const fXL = z.position.x - cosZ * footOffsetSide;
-      const fZL = z.position.z + sinZ * footOffsetSide;
+      // Left arm: reaches forward and clasp right shoulder (proper mirrored signs!)
+      if (armL && getZR('upper_armL')) {
+        armL.rotation.x = getZR('upper_armL').x - 0.10 - tremble;
+        armL.rotation.y = getZR('upper_armL').y + 1.45 + tension * 0.3 + gr.swayX * 0.25;
+        armL.rotation.z = (getZR('upper_armL').z || 0) - 0.10;
+      }
+      if (foreL && getZR('forearmL')) {
+        foreL.rotation.x = getZR('forearmL').x + 0.36 - tension - tremble;
+        foreL.rotation.y = getZR('forearmL').y;
+        foreL.rotation.z = getZR('forearmL').z;
+      }
 
-      const slopeDeltaR = Math.max(-0.4, Math.min(0.4, getTerrainHeight(fXR, fZR) - groundY));
-      const slopeDeltaL = Math.max(-0.4, Math.min(0.4, getTerrainHeight(fXL, fZL) - groundY));
+      // 5. 2-BONE IK LEGS: Adapt to terrain slope & dragging shuffle
+      const sideR = 0.14;
+      const footXR = z.position.x + cosF * sideR;
+      const footZR = z.position.z - sinF * sideR;
+      const footXL = z.position.x - cosF * sideR;
+      const footZL = z.position.z + sinF * sideR;
 
-      const ikR = solveLegIK(REST_HIP_Y, 0.0, REST_ANKLE_Y + slopeDeltaR, 0.05, getZR('thighR').x, getZR('shinR').x);
-      const ikL = solveLegIK(REST_HIP_Y, 0.0, REST_ANKLE_Y + slopeDeltaL, -0.05, getZR('thighL').x, getZR('shinL').x);
+      const gYR = getTerrainHeight(footXR, footZR);
+      const gYL = getTerrainHeight(footXL, footZL);
 
-      if (thighR) thighR.rotation.x = ikR.thighX;
-      if (shinR) shinR.rotation.x = ikR.shinX;
-      if (footR) footR.rotation.x = getZR('footR').x + slopeDeltaR * 1.5;
+      const shuffle = playerIsMoving ? Math.sin(time * 12.0) : 0;
+      const deltaYR = Math.max(-0.35, Math.min(0.35, (gYR - z.position.y) + Math.max(0, shuffle) * 0.08));
+      const deltaYL = Math.max(-0.35, Math.min(0.35, (gYL - z.position.y) + Math.max(0, -shuffle) * 0.08));
 
-      if (thighL) thighL.rotation.x = ikL.thighX;
-      if (shinL) shinL.rotation.x = ikL.shinX;
-      if (footL) footL.rotation.x = getZR('footL').x + slopeDeltaL * 1.5;
+      const ikR = solveLegIK(REST_HIP_Y, 0.0, REST_ANKLE_Y + deltaYR, 0.04 + shuffle * 0.06, getZR('thighR').x, getZR('shinR').x);
+      const ikL = solveLegIK(REST_HIP_Y, 0.0, REST_ANKLE_Y + deltaYL, -0.04 - shuffle * 0.06, getZR('thighL').x, getZR('shinL').x);
+
+      if (thighR && getZR('thighR')) {
+        thighR.rotation.x = ikR.thighX;
+        thighR.rotation.z = (getZR('thighR').z || 0) + 0.06;
+      }
+      if (shinR && getZR('shinR')) shinR.rotation.x = ikR.shinX;
+      if (footR && getZR('footR')) footR.rotation.x = getZR('footR').x + deltaYR * 1.2;
+
+      if (thighL && getZR('thighL')) {
+        thighL.rotation.x = ikL.thighX;
+        thighL.rotation.z = (getZR('thighL').z || 0) - 0.06;
+      }
+      if (shinL && getZR('shinL')) shinL.rotation.x = ikL.shinX;
+      if (footL && getZR('footL')) footL.rotation.x = getZR('footL').x + deltaYL * 1.2;
 
       continue; // Skip normal wander/chase while grabbing
     }
@@ -1112,19 +1240,26 @@ function updateZombies(dt) {
     }
 
     // Outstretched zombie arms with fast bobbing
+    z.model.rotation.set(0, 0, 0);
     if (armR && getZR('upper_armR')) {
       armR.rotation.x = getZR('upper_armR').x + Math.sin(cycle + 0.3) * 0.16;
       armR.rotation.y = getZR('upper_armR').y - 1.40 + Math.sin(cycle * 0.9) * 0.12;
+      armR.rotation.z = (getZR('upper_armR').z || 0);
     }
     if (armL && getZR('upper_armL')) {
       armL.rotation.x = getZR('upper_armL').x - Math.sin(cycle - 0.3) * 0.16;
-      armL.rotation.y = getZR('upper_armL').y - 1.40 - Math.sin(cycle * 0.9) * 0.12;
+      armL.rotation.y = getZR('upper_armL').y + 1.40 + Math.sin(cycle * 0.9) * 0.12;
+      armL.rotation.z = (getZR('upper_armL').z || 0);
     }
     if (foreR && getZR('forearmR')) {
       foreR.rotation.x = getZR('forearmR').x + 0.20 + Math.cos(cycle) * 0.10;
+      foreR.rotation.y = getZR('forearmR').y;
+      foreR.rotation.z = getZR('forearmR').z;
     }
     if (foreL && getZR('forearmL')) {
       foreL.rotation.x = getZR('forearmL').x + 0.20 - Math.cos(cycle) * 0.10;
+      foreL.rotation.y = getZR('forearmL').y;
+      foreL.rotation.z = getZR('forearmL').z;
     }
 
     // Torso stagger & hunch

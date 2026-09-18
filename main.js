@@ -1025,19 +1025,21 @@ function updateZombies(dt) {
         continue;
       }
 
-      // 4. "FISICA ATTIVA": Active Ragdoll Body Sway & Limb Inertia
+      // 4. "FISICA ATTIVA": Active Ragdoll Body Sway & Limb Inertia (Calibrata: meno inclinata)
       const cosF = Math.cos(z.facingAngle);
       const sinF = Math.sin(z.facingAngle);
       // Local lateral and forward velocities
       const localVelX = cosF * z.velocity.x - sinF * z.velocity.z;
       const localVelZ = sinF * z.velocity.x + cosF * z.velocity.z;
 
-      // Active torso tilt & swing from drag forces
-      gr.swayX += (-localVelX * 0.16 - gr.swayX) * Math.min(1.0, 12.0 * dt);
-      gr.swayZ += (localVelZ * 0.14 - gr.swayZ) * Math.min(1.0, 12.0 * dt);
+      // Active torso tilt & swing from drag forces - ridotta per postura più naturale e controllata
+      const targetSwayX = Math.max(-0.15, Math.min(0.15, -localVelX * 0.045));
+      const targetSwayZ = Math.max(-0.12, Math.min(0.12, localVelZ * 0.035));
+      gr.swayX += (targetSwayX - gr.swayX) * Math.min(1.0, 10.0 * dt);
+      gr.swayZ += (targetSwayZ - gr.swayZ) * Math.min(1.0, 10.0 * dt);
 
-      z.model.rotation.z = gr.swayX; // Torso rolls sideways when dragged
-      z.model.rotation.x = gr.swayZ; // Torso leans forward/backward
+      z.model.rotation.z = gr.swayX * 0.6; // Inclinazione laterale leggera
+      z.model.rotation.x = gr.swayZ * 0.5; // Inclinazione frontale contenuta
 
       const bones = z.bones;
       const rest = z.restRotations;
@@ -1058,42 +1060,42 @@ function updateZombies(dt) {
       const footL = getZB('footL');
 
       const time = clock.getElapsedTime();
-      const tremble = Math.sin(time * 24.0) * 0.04;
-      const tension = Math.max(-0.20, Math.min(0.30, (curDist - 0.90) * 0.9));
+      const tremble = Math.sin(time * 24.0) * 0.035;
+      const tension = Math.max(-0.15, Math.min(0.20, (curDist - 0.90) * 0.7));
 
-      // Spine & Head dynamic reactive ragdoll:
+      // Spine & Head dynamic reactive ragdoll (inclinazione frontale dolce, zombie più eretto):
       if (chest && getZR('chest')) {
-        chest.rotation.x = (getZR('chest').x || 0) - 0.22 + gr.swayZ * 0.4;
-        chest.rotation.y = (getZR('chest').y || 0) + gr.swayX * 0.5 + Math.sin(time * 16.0) * 0.06;
-        chest.rotation.z = (getZR('chest').z || 0) - gr.swayX * 0.3;
+        chest.rotation.x = (getZR('chest').x || 0) - 0.08 + gr.swayZ * 0.25;
+        chest.rotation.y = (getZR('chest').y || 0) + gr.swayX * 0.35 + Math.sin(time * 16.0) * 0.04;
+        chest.rotation.z = (getZR('chest').z || 0) - gr.swayX * 0.2;
       }
       if (head && getZR('head')) {
-        head.rotation.x = (getZR('head').x || 0) + 0.22 - gr.swayZ * 0.6 + Math.sin(time * 20.0) * 0.12;
-        head.rotation.y = (getZR('head').y || 0) - gr.swayX * 0.6;
-        head.rotation.z = (getZR('head').z || 0) + gr.swayX * 0.4 + Math.sin(time * 18.0) * 0.05;
+        head.rotation.x = (getZR('head').x || 0) + 0.10 - gr.swayZ * 0.3 + Math.sin(time * 20.0) * 0.08;
+        head.rotation.y = (getZR('head').y || 0) - gr.swayX * 0.35;
+        head.rotation.z = (getZR('head').z || 0) + gr.swayX * 0.25 + Math.sin(time * 18.0) * 0.04;
       }
 
-      // RAGDOLL ARMS: Wrap around player's shoulders (NO head clipping!)
+      // RAGDOLL ARMS: Wrap around player's shoulders
       // Right arm: reaches forward and clasp left shoulder
       if (armR && getZR('upper_armR')) {
-        armR.rotation.x = getZR('upper_armR').x + 0.10 + tremble;
-        armR.rotation.y = getZR('upper_armR').y - 1.45 - tension * 0.3 + gr.swayX * 0.25;
-        armR.rotation.z = (getZR('upper_armR').z || 0) + 0.10;
+        armR.rotation.x = getZR('upper_armR').x + 0.06 + tremble;
+        armR.rotation.y = getZR('upper_armR').y - 1.45 - tension * 0.25 + gr.swayX * 0.15;
+        armR.rotation.z = (getZR('upper_armR').z || 0) + 0.08;
       }
       if (foreR && getZR('forearmR')) {
-        foreR.rotation.x = getZR('forearmR').x + 0.36 - tension + tremble;
+        foreR.rotation.x = getZR('forearmR').x + 0.35 - tension + tremble;
         foreR.rotation.y = getZR('forearmR').y;
         foreR.rotation.z = getZR('forearmR').z;
       }
 
       // Left arm: reaches forward and clasp right shoulder (proper mirrored signs!)
       if (armL && getZR('upper_armL')) {
-        armL.rotation.x = getZR('upper_armL').x - 0.10 - tremble;
-        armL.rotation.y = getZR('upper_armL').y + 1.45 + tension * 0.3 + gr.swayX * 0.25;
-        armL.rotation.z = (getZR('upper_armL').z || 0) - 0.10;
+        armL.rotation.x = getZR('upper_armL').x - 0.06 - tremble;
+        armL.rotation.y = getZR('upper_armL').y + 1.45 + tension * 0.25 + gr.swayX * 0.15;
+        armL.rotation.z = (getZR('upper_armL').z || 0) - 0.08;
       }
       if (foreL && getZR('forearmL')) {
-        foreL.rotation.x = getZR('forearmL').x + 0.36 - tension - tremble;
+        foreL.rotation.x = getZR('forearmL').x + 0.35 - tension - tremble;
         foreL.rotation.y = getZR('forearmL').y;
         foreL.rotation.z = getZR('forearmL').z;
       }

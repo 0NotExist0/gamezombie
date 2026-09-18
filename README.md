@@ -16,11 +16,17 @@ Un gioco d'avventura 3D in terza e prima persona sviluppato con **Three.js**, **
 - **Rig dell'Armature con Controlli IK in Blender**:
   - Scheletro potenziato nei file `character.blend` e `game.blend` con controller `ik_foot.L`, `ik_foot.R` e pole targets per le ginocchia `pole_knee.L`, `pole_knee.R`.
   - Vincoli IK a catena a 2 segmenti configurati con pole angle allineato al grado di riposo per animazione e posa professionale.
+- **Zombie e Sistema di Combattimento coi Pugni**:
+  - Modello Zombie 3D creato in Blender (`zombies.blend` & `zombies.glb`) derivato dalla base del personaggio con pelle putrefatta verde, occhi luminescenti rossi, mascella spalancata con zanne, squarcio sul petto con costole esposte e abiti lacerati.
+  - IA Zombie autonoma: vagamento procedurale e inseguimento del giocatore a vista con andatura zoppicante e braccia tese in avanti.
+  - Combattimento corpo a corpo: sferra pugni veloci e potenti (sinistro e destro alternati) con Click Sinistro, tasto `F` o pulsante touch `PUGNO 🥊`.
+  - Reazioni d'impatto con particelle di sangue/scintille, knockback, flash di danno sui materiali e barre della salute sospese sopra la testa dei non-morti.
+  - Effetti sonori completi Web Audio: fendente del pugno nell'aria, impatto del colpo sul bersaglio, grugnito di dolore e verso di morte degli zombie.
 - **Doppia Visuale**: Alterna tra 3ª persona (orbital camera) e 1ª persona (vista occhi) con il tasto `V`.
 - **Controlli Completi per Smartphone & Tablet**:
   - Joystick analogico virtuale a 360°.
   - Swipe con tocco per rotazione libera della telecamera.
-  - Pulsanti touch dedicati per Salto e Corsa.
+  - Pulsanti touch dedicati per Pugno (`🥊`), Salto e Corsa.
 - **Personalizzazione Mouse**: Toggle rapidi per Inversione Asse X (`X`) e Asse Y (`I`).
 - **Mondo Procedurale Low-Poly**: Terreno deformato proceduralmente con alberi, rocce e gemme collezionabili con effetti sonori Web Audio.
 
@@ -63,6 +69,7 @@ npm run build
 | Azione | PC (Tastiera e Mouse) | Smartphone / Touch |
 |---|---|---|
 | **Movimento** | `W, A, S, D` o Frecce | Joystick virtuale (Basso a sinistra) |
+| **Pugno / Attacco** | `Click Sinistro` o `F` / `E` | Pulsante `PUGNO 🥊` (Basso a destra) |
 | **Salto** | `SPAZIO` | Pulsante `SALTA` |
 | **Scatto / Corsa** | `SHIFT` (Tieni premuto) | Pulsante `CORSA` (Toggle) |
 | **Cambia Visuale (1ª/3ª)** | `V` | Badge `Visuale` in alto a sinistra |

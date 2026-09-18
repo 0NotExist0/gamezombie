@@ -52,6 +52,67 @@ function playBeep(freq, duration, type = 'sine') {
   osc.stop(audioCtx.currentTime + duration);
 }
 
+// --- Combat & Zombie Sound Effects ---
+function playPunchWhoosh() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(340, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(65, audioCtx.currentTime + 0.15);
+  gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.15);
+}
+
+function playPunchImpact() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(160, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(30, audioCtx.currentTime + 0.18);
+  gain.gain.setValueAtTime(0.40, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.18);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.18);
+}
+
+function playZombieHurt() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(110, audioCtx.currentTime);
+  osc.frequency.linearRampToValueAtTime(55, audioCtx.currentTime + 0.24);
+  gain.gain.setValueAtTime(0.22, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.24);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.24);
+}
+
+function playZombieDeath() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(85, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(22, audioCtx.currentTime + 0.65);
+  gain.gain.setValueAtTime(0.32, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.65);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.65);
+}
+
 // --- Procedural Low-Poly Terrain ---
 const terrainSize = 300;
 const terrainSegments = 80;
@@ -240,7 +301,15 @@ const player = {
   sprintMultiplier: 1.6,
   jumpStrength: 9.8,
   facingAngle: 0,
-  walkCycle: 0
+  walkCycle: 0,
+  // Combat stats & state
+  isAttacking: false,
+  attackTimer: 0,
+  attackDuration: 0.24,
+  attackSide: 0,
+  attackCooldown: 0,
+  attackRange: 2.7,
+  attackDamage: 35
 };
 scene.add(player.group);
 
@@ -280,6 +349,413 @@ loader.load('/character.glb', (gltf) => {
   console.log('👤 Developed by: 0Not_Exist0');
   console.log('🦴 Character and IK bones loaded successfully:', Object.keys(player.bones));
 });
+
+// --- Combat Hit Particles ---
+const hitParticles = [];
+const hitParticleGeo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
+
+function spawnHitParticles(x, y, z) {
+  for (let i = 0; i < 9; i++) {
+    const pMat = new THREE.MeshBasicMaterial({
+      color: Math.random() > 0.4 ? 0xff3b30 : 0xffcc00
+    });
+    const pMesh = new THREE.Mesh(hitParticleGeo, pMat);
+    pMesh.position.set(x, y, z);
+    const speed = 2.0 + Math.random() * 3.5;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = (Math.random() - 0.5) * Math.PI;
+    const vx = Math.cos(theta) * Math.cos(phi) * speed;
+    const vy = Math.abs(Math.sin(phi)) * speed + 1.2;
+    const vz = Math.sin(theta) * Math.cos(phi) * speed;
+    scene.add(pMesh);
+    hitParticles.push({
+      mesh: pMesh,
+      vx,
+      vy,
+      vz,
+      life: 0.32,
+      maxLife: 0.32
+    });
+  }
+}
+
+function updateParticles(dt) {
+  for (let i = hitParticles.length - 1; i >= 0; i--) {
+    const p = hitParticles[i];
+    p.life -= dt;
+    if (p.life <= 0) {
+      scene.remove(p.mesh);
+      hitParticles.splice(i, 1);
+      continue;
+    }
+    p.vy -= 18.0 * dt;
+    p.mesh.position.x += p.vx * dt;
+    p.mesh.position.y += p.vy * dt;
+    p.mesh.position.z += p.vz * dt;
+    p.mesh.rotation.x += 12 * dt;
+    p.mesh.rotation.y += 12 * dt;
+    const s = Math.max(0, p.life / p.maxLife);
+    p.mesh.scale.set(s, s, s);
+  }
+}
+
+// --- Zombie Management & AI ---
+const zombies = [];
+let zombiesDefeated = 0;
+const totalZombies = 8;
+let zombieTemplate = null;
+
+function createZombieHealthBar() {
+  const barGroup = new THREE.Group();
+  
+  // Background
+  const bgGeo = new THREE.PlaneGeometry(0.72, 0.08);
+  const bgMat = new THREE.MeshBasicMaterial({ color: 0x1a1a24, side: THREE.DoubleSide });
+  const bgMesh = new THREE.Mesh(bgGeo, bgMat);
+  barGroup.add(bgMesh);
+
+  // Fill
+  const fgGeo = new THREE.PlaneGeometry(0.70, 0.06);
+  fgGeo.translate(0.35, 0, 0); // anchor at left
+  const fgMat = new THREE.MeshBasicMaterial({ color: 0x06d6a0, side: THREE.DoubleSide });
+  const fgMesh = new THREE.Mesh(fgGeo, fgMat);
+  fgMesh.position.set(-0.35, 0, 0.005);
+  barGroup.add(fgMesh);
+
+  barGroup.position.y = 2.15;
+  return { barGroup, fgMesh, fgMat };
+}
+
+function updateZombieHealthBar(z) {
+  if (!z.healthBar) return;
+  const ratio = Math.max(0, Math.min(1, z.hp / z.maxHp));
+  z.healthBar.fgMesh.scale.x = ratio;
+  if (ratio > 0.5) {
+    z.healthBar.fgMat.color.setHex(0x06d6a0);
+  } else if (ratio > 0.25) {
+    z.healthBar.fgMat.color.setHex(0xffd166);
+  } else {
+    z.healthBar.fgMat.color.setHex(0xef476f);
+  }
+}
+
+function spawnZombies() {
+  if (!zombieTemplate) return;
+
+  for (let i = 0; i < totalZombies; i++) {
+    const ang = (i / totalZombies) * Math.PI * 2 + (Math.random() * 0.4 - 0.2);
+    const dist = 24 + Math.random() * 42;
+    const zx = Math.cos(ang) * dist;
+    const zz = Math.sin(ang) * dist;
+    const zy = getTerrainHeight(zx, zz);
+
+    const zGroup = new THREE.Group();
+    zGroup.position.set(zx, zy, zz);
+
+    const modelClone = zombieTemplate.clone(true);
+    const bones = {};
+    const restRotations = {};
+    const materials = [];
+
+    modelClone.traverse((child) => {
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+        if (child.material) {
+          child.material = child.material.clone();
+          child.material.flatShading = true;
+          materials.push({
+            mat: child.material,
+            origColor: child.material.color ? child.material.color.clone() : new THREE.Color(0xffffff)
+          });
+        }
+      }
+      if (child.name) {
+        const name = child.name;
+        const stripped = name.replace(/\./g, '');
+        bones[name] = child;
+        bones[stripped] = child;
+        restRotations[name] = child.rotation.clone();
+        restRotations[stripped] = child.rotation.clone();
+      }
+    });
+
+    zGroup.add(modelClone);
+
+    const healthBar = createZombieHealthBar();
+    zGroup.add(healthBar.barGroup);
+
+    scene.add(zGroup);
+
+    zombies.push({
+      group: zGroup,
+      model: modelClone,
+      bones,
+      restRotations,
+      materials,
+      healthBar,
+      position: zGroup.position,
+      velocity: new THREE.Vector3(),
+      hp: 100,
+      maxHp: 100,
+      isDead: false,
+      hitFlashTime: 0,
+      deathTimer: 0,
+      facingAngle: Math.random() * Math.PI * 2,
+      walkCycle: Math.random() * Math.PI * 2,
+      wanderTimer: Math.random() * 3,
+      wanderAngle: Math.random() * Math.PI * 2,
+      speed: 2.2,
+      state: 'wander'
+    });
+  }
+}
+
+// Load Zombies GLB
+loader.load('/zombies.glb', (gltf) => {
+  zombieTemplate = gltf.scene;
+  console.log('🧟 Zombies GLB loaded successfully!');
+  spawnZombies();
+});
+
+// --- Punch Attack Mechanics ---
+function punchAttack() {
+  if (player.attackCooldown > 0) return;
+  player.isAttacking = true;
+  player.attackTimer = player.attackDuration;
+  player.attackCooldown = 0.28;
+  player.attackSide = 1 - player.attackSide;
+  playPunchWhoosh();
+  checkPunchHits();
+}
+
+function checkPunchHits() {
+  const punchReach = player.attackRange;
+  const angle = isFirstPerson ? cameraYaw : player.facingAngle;
+  const fwdX = Math.sin(angle);
+  const fwdZ = Math.cos(angle);
+
+  let hitAny = false;
+
+  for (let i = 0; i < zombies.length; i++) {
+    const z = zombies[i];
+    if (z.isDead) continue;
+
+    const dx = z.position.x - player.position.x;
+    const dz = z.position.z - player.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+
+    if (dist <= punchReach) {
+      const nx = dx / (dist || 1);
+      const nz = dz / (dist || 1);
+      const dot = fwdX * nx + fwdZ * nz;
+
+      if (dot > 0.40) {
+        hitAny = true;
+        damageZombie(z, player.attackDamage, nx, nz);
+      }
+    }
+  }
+
+  if (hitAny) {
+    playPunchImpact();
+  }
+}
+
+function damageZombie(z, damage, dirX, dirZ) {
+  z.hp = Math.max(0, z.hp - damage);
+  z.hitFlashTime = 0.22;
+
+  // Knockback impulse
+  z.velocity.x = dirX * 6.5;
+  z.velocity.z = dirZ * 6.5;
+
+  playZombieHurt();
+  spawnHitParticles(z.position.x, z.position.y + 1.25, z.position.z);
+  updateZombieHealthBar(z);
+
+  if (z.hp <= 0 && !z.isDead) {
+    z.isDead = true;
+    z.deathTimer = 0;
+    zombiesDefeated++;
+    const countElem = document.getElementById('zombies-count');
+    if (countElem) countElem.innerText = zombiesDefeated;
+    playZombieDeath();
+  }
+}
+
+function updateZombies(dt) {
+  for (let i = 0; i < zombies.length; i++) {
+    const z = zombies[i];
+
+    // Orient health bar towards current camera
+    if (z.healthBar && z.healthBar.barGroup) {
+      z.healthBar.barGroup.quaternion.copy(camera.quaternion);
+    }
+
+    // Dead Zombie handling
+    if (z.isDead) {
+      z.deathTimer += dt;
+      if (z.deathTimer < 1.0) {
+        // Fall backward smoothly onto ground
+        const fallProgress = Math.min(1.0, z.deathTimer / 0.75);
+        z.model.rotation.x = -fallProgress * (Math.PI / 2);
+      } else {
+        // Sink into ground
+        z.position.y -= 0.45 * dt;
+        if (z.deathTimer > 3.2 && z.group.parent) {
+          scene.remove(z.group);
+        }
+      }
+      continue;
+    }
+
+    // Hit flash handling
+    if (z.hitFlashTime > 0) {
+      z.hitFlashTime -= dt;
+      const flash = z.hitFlashTime > 0;
+      z.materials.forEach(({ mat, origColor }) => {
+        if (flash) {
+          mat.color.setHex(0xff3333);
+        } else {
+          mat.color.copy(origColor);
+        }
+      });
+    }
+
+    // Knockback dampening
+    z.velocity.x *= Math.pow(0.005, dt);
+    z.velocity.z *= Math.pow(0.005, dt);
+
+    // AI logic: Detection distance to player
+    const dx = player.position.x - z.position.x;
+    const dz = player.position.z - z.position.z;
+    const distToPlayer = Math.sqrt(dx * dx + dz * dz);
+
+    let moveSpeed = 0;
+    let targetAngle = z.facingAngle;
+
+    if (distToPlayer < 24.0) {
+      // Chase player
+      z.state = 'chase';
+      targetAngle = Math.atan2(dx, dz);
+      if (distToPlayer > 1.35) {
+        moveSpeed = z.speed; // 2.2 m/s
+      } else {
+        moveSpeed = 0; // In contact with player
+      }
+    } else {
+      // Wander / Patrol
+      z.state = 'wander';
+      z.wanderTimer -= dt;
+      if (z.wanderTimer <= 0) {
+        z.wanderTimer = 3.5 + Math.random() * 4.0;
+        z.wanderAngle += (Math.random() - 0.5) * 2.2;
+      }
+      targetAngle = z.wanderAngle;
+      moveSpeed = 0.85; // Slow shuffle
+    }
+
+    // Smooth turn towards targetAngle
+    let diff = targetAngle - z.facingAngle;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    z.facingAngle += diff * 5.0 * dt;
+
+    // Movement integration
+    const fwdX = Math.sin(z.facingAngle) * moveSpeed;
+    const fwdZ = Math.cos(z.facingAngle) * moveSpeed;
+
+    let nextX = z.position.x + (fwdX + z.velocity.x) * dt;
+    let nextZ = z.position.z + (fwdZ + z.velocity.z) * dt;
+
+    // Terrain boundaries
+    const maxBound = halfSize - 4;
+    nextX = Math.max(-maxBound, Math.min(maxBound, nextX));
+    nextZ = Math.max(-maxBound, Math.min(maxBound, nextZ));
+
+    // Obstacle collision avoidance
+    for (let o = 0; o < obstacles.length; o++) {
+      const obs = obstacles[o];
+      const ox = nextX - obs.x;
+      const oz = nextZ - obs.z;
+      const dSq = ox * ox + oz * oz;
+      const minD = obs.radius + 0.45;
+      if (dSq < minD * minD && dSq > 0.0001) {
+        const d = Math.sqrt(dSq);
+        const push = (minD - d) / d;
+        nextX += ox * push;
+        nextZ += oz * push;
+      }
+    }
+
+    z.position.x = nextX;
+    z.position.z = nextZ;
+    z.position.y = getTerrainHeight(nextX, nextZ);
+
+    z.group.position.copy(z.position);
+    z.group.rotation.y = z.facingAngle;
+
+    // Procedural Zombie Shambling Gait Animation
+    const bones = z.bones;
+    const rest = z.restRotations;
+    const getZB = (name) => bones[name] || bones[name.replace(/\./g, '')];
+    const getZR = (name) => rest[name] || rest[name.replace(/\./g, '')];
+
+    const thighR = getZB('thighR');
+    const thighL = getZB('thighL');
+    const shinR = getZB('shinR');
+    const shinL = getZB('shinL');
+    const armR = getZB('upper_armR');
+    const armL = getZB('upper_armL');
+    const foreR = getZB('forearmR');
+    const foreL = getZB('forearmL');
+    const chest = getZB('chest');
+    const head = getZB('head');
+
+    const isWalking = moveSpeed > 0.05;
+    if (isWalking) {
+      z.walkCycle += dt * (z.state === 'chase' ? 4.2 : 2.5);
+    }
+    const cycle = z.walkCycle;
+
+    // Limping shambling legs
+    if (thighR && getZR('thighR')) {
+      const legR = Math.sin(cycle);
+      const legL = -Math.sin(cycle);
+      thighR.rotation.x = getZR('thighR').x + legR * 0.38;
+      thighL.rotation.x = getZR('thighL').x + legL * 0.32;
+      if (shinR && getZR('shinR')) shinR.rotation.x = getZR('shinR').x + Math.max(0, -legR) * 0.42;
+      if (shinL && getZR('shinL')) shinL.rotation.x = getZR('shinL').x + Math.max(0, -legL) * 0.35;
+    }
+
+    // Outstretched zombie arms with twitching bob
+    if (armR && getZR('upper_armR')) {
+      armR.rotation.x = getZR('upper_armR').x + Math.sin(cycle + 0.3) * 0.10;
+      armR.rotation.y = getZR('upper_armR').y - 1.38 + Math.sin(cycle * 0.7) * 0.07;
+    }
+    if (armL && getZR('upper_armL')) {
+      armL.rotation.x = getZR('upper_armL').x - Math.sin(cycle - 0.3) * 0.10;
+      armL.rotation.y = getZR('upper_armL').y - 1.38 - Math.sin(cycle * 0.7) * 0.07;
+    }
+    if (foreR && getZR('forearmR')) {
+      foreR.rotation.x = getZR('forearmR').x + 0.18 + Math.cos(cycle) * 0.06;
+    }
+    if (foreL && getZR('forearmL')) {
+      foreL.rotation.x = getZR('forearmL').x + 0.18 - Math.cos(cycle) * 0.06;
+    }
+
+    // Torso stagger & hunch
+    if (chest && getZR('chest')) {
+      chest.rotation.x = (getZR('chest').x || 0) - 0.15 + (z.hitFlashTime > 0 ? 0.30 : 0);
+      chest.rotation.z = (getZR('chest').z || 0) + Math.sin(cycle * 0.5) * 0.10;
+    }
+    if (head && getZR('head')) {
+      head.rotation.z = (getZR('head').z || 0) + 0.16 + Math.sin(cycle * 0.8) * 0.06;
+      head.rotation.x = (getZR('head').x || 0) + 0.08;
+    }
+  }
+}
 
 // --- Camera & View State ---
 let isFirstPerson = false;
@@ -360,9 +836,19 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyI') {
     toggleInvertY();
   }
+  if (e.code === 'KeyF' || e.code === 'KeyE') {
+    punchAttack();
+  }
 });
 window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
+});
+
+// Mouse Left Click Punch
+window.addEventListener('mousedown', (e) => {
+  if (e.button === 0 && gameStarted && (document.pointerLockElement === document.body || isFirstPerson)) {
+    punchAttack();
+  }
 });
 
 // Pointer Lock & Touch Detection
@@ -572,7 +1058,17 @@ if (touchLookZone) {
   window.addEventListener('touchcancel', resetLook, { passive: true });
 }
 
-// 3. Touch Buttons (Jump & Sprint)
+// 3. Touch Buttons (Punch, Jump & Sprint)
+const touchBtnPunch = document.getElementById('touch-btn-punch');
+if (touchBtnPunch) {
+  touchBtnPunch.addEventListener('touchstart', (e) => {
+    if (!gameStarted) return;
+    e.preventDefault();
+    e.stopPropagation();
+    punchAttack();
+  }, { passive: false });
+}
+
 const touchBtnJump = document.getElementById('touch-btn-jump');
 if (touchBtnJump) {
   touchBtnJump.addEventListener('touchstart', (e) => {
@@ -604,6 +1100,17 @@ const clock = new THREE.Clock();
 const gravity = -24.0;
 
 function updatePlayer(dt) {
+  // Update Attack Timers
+  if (player.attackCooldown > 0) {
+    player.attackCooldown -= dt;
+  }
+  if (player.isAttacking) {
+    player.attackTimer -= dt;
+    if (player.attackTimer <= 0) {
+      player.isAttacking = false;
+    }
+  }
+
   // 1. Calculate camera-relative forward and right vectors on XZ plane
   // When cameraYaw = 0: looking along +Z.
   const fwdX = Math.sin(cameraYaw);
@@ -896,49 +1403,118 @@ function updatePlayer(dt) {
       shinL.rotation.x = resL.ik.shinX;
       if (footL) footL.rotation.x = getR('footL').x + resL.anklePitch;
 
-      // 3. Upper Body Natural Balance
-      // Arms swing in natural opposition to legs
-      const armSwing = Math.sin(cycle);
-      const armAmpY = isSprinting ? 0.68 : 0.44;
-      const armAmpX = isSprinting ? 0.32 : 0.18;
+      // Punch attack animation helper
+      const applyPunchAnimation = () => {
+        const progress = 1.0 - Math.max(0, player.attackTimer / player.attackDuration);
+        const strike = progress < 0.35 
+          ? (progress / 0.35) 
+          : Math.pow(1.0 - (progress - 0.35) / 0.65, 2.0);
 
-      if (armR) {
-        armR.rotation.y = getR('upper_armR').y - armSwing * armAmpY;
-        armR.rotation.x = getR('upper_armR').x + armSwing * armAmpX;
-      }
-      if (armL) {
-        armL.rotation.y = getR('upper_armL').y - armSwing * armAmpY;
-        armL.rotation.x = getR('upper_armL').x - armSwing * armAmpX;
-      }
+        const isRight = player.attackSide === 0;
 
-      // Forearms (elbows) dynamic flexion on forward swing
-      if (foreR) foreR.rotation.x = getR('forearmR').x - Math.max(0, -armSwing) * (isSprinting ? 0.48 : 0.30);
-      if (foreL) foreL.rotation.x = getR('forearmL').x - Math.max(0, armSwing) * (isSprinting ? 0.48 : 0.30);
+        if (isRight) {
+          if (armR) {
+            armR.rotation.y = getR('upper_armR').y - 1.48 * strike;
+            armR.rotation.x = getR('upper_armR').x + 0.28 * strike;
+            armR.rotation.z = (getR('upper_armR').z || 0) + 0.15 * strike;
+          }
+          if (foreR) {
+            foreR.rotation.x = getR('forearmR').x - 0.55 * strike;
+          }
+          if (armL) {
+            armL.rotation.y = getR('upper_armL').y - 0.65;
+            armL.rotation.x = getR('upper_armL').x - 0.22;
+          }
+          if (foreL) {
+            foreL.rotation.x = getR('forearmL').x - 0.85;
+          }
+          if (chest && getR('chest')) {
+            chest.rotation.y = (getR('chest').y || 0) - 0.32 * strike;
+            chest.rotation.x = (getR('chest').x || 0) - 0.14 * strike;
+          }
+        } else {
+          if (armL) {
+            armL.rotation.y = getR('upper_armL').y - 1.48 * strike;
+            armL.rotation.x = getR('upper_armL').x - 0.28 * strike;
+            armL.rotation.z = (getR('upper_armL').z || 0) - 0.15 * strike;
+          }
+          if (foreL) {
+            foreL.rotation.x = getR('forearmL').x - 0.55 * strike;
+          }
+          if (armR) {
+            armR.rotation.y = getR('upper_armR').y - 0.65;
+            armR.rotation.x = getR('upper_armR').x + 0.22;
+          }
+          if (foreR) {
+            foreR.rotation.x = getR('forearmR').x - 0.85;
+          }
+          if (chest && getR('chest')) {
+            chest.rotation.y = (getR('chest').y || 0) + 0.32 * strike;
+            chest.rotation.x = (getR('chest').x || 0) - 0.14 * strike;
+          }
+        }
+      };
 
-      // Spine & Chest counter-rotation and forward tilt
-      if (chest && getR('chest')) {
-        chest.rotation.y = (getR('chest').y || 0) - Math.sin(cycle) * (isSprinting ? 0.075 : 0.045);
-        chest.rotation.x = (getR('chest').x || 0) - (isSprinting ? 0.16 : 0.055);
-        chest.rotation.z = (getR('chest').z || 0) - Math.sin(cycle) * 0.02;
+      // 3. Upper Body Natural Balance & Combat Strikes
+      if (player.isAttacking) {
+        applyPunchAnimation();
+      } else {
+        const armSwing = Math.sin(cycle);
+        const armAmpY = isSprinting ? 0.68 : 0.44;
+        const armAmpX = isSprinting ? 0.32 : 0.18;
+
+        if (armR) {
+          armR.rotation.y = getR('upper_armR').y - armSwing * armAmpY;
+          armR.rotation.x = getR('upper_armR').x + armSwing * armAmpX;
+        }
+        if (armL) {
+          armL.rotation.y = getR('upper_armL').y - armSwing * armAmpY;
+          armL.rotation.x = getR('upper_armL').x - armSwing * armAmpX;
+        }
+
+        // Forearms (elbows) dynamic flexion on forward swing
+        if (foreR) foreR.rotation.x = getR('forearmR').x - Math.max(0, -armSwing) * (isSprinting ? 0.48 : 0.30);
+        if (foreL) foreL.rotation.x = getR('forearmL').x - Math.max(0, armSwing) * (isSprinting ? 0.48 : 0.30);
+
+        // Spine & Chest counter-rotation and forward tilt
+        if (chest && getR('chest')) {
+          chest.rotation.y = (getR('chest').y || 0) - Math.sin(cycle) * (isSprinting ? 0.075 : 0.045);
+          chest.rotation.x = (getR('chest').x || 0) - (isSprinting ? 0.16 : 0.055);
+          chest.rotation.z = (getR('chest').z || 0) - Math.sin(cycle) * 0.02;
+        }
       }
 
     } else {
       // --- IDLE POSE & GENTLE ORGANIC BREATHING ---
       const lerpFactor = Math.min(1.0, 10.0 * dt);
-      const boneList = ['thighR', 'thighL', 'shinR', 'shinL', 'footR', 'footL', 'upper_armR', 'upper_armL', 'forearmR', 'forearmL'];
 
-      boneList.forEach(name => {
-        const b = getB(name);
-        const r = getR(name);
-        if (b && r) {
-          b.rotation.x += (r.x - b.rotation.x) * lerpFactor;
-          b.rotation.y += (r.y - b.rotation.y) * lerpFactor;
-          b.rotation.z += (r.z - b.rotation.z) * lerpFactor;
-        }
-      });
+      if (player.isAttacking) {
+        applyPunchAnimation();
+        const legBones = ['thighR', 'thighL', 'shinR', 'shinL', 'footR', 'footL'];
+        legBones.forEach(name => {
+          const b = getB(name);
+          const r = getR(name);
+          if (b && r) {
+            b.rotation.x += (r.x - b.rotation.x) * lerpFactor;
+            b.rotation.y += (r.y - b.rotation.y) * lerpFactor;
+            b.rotation.z += (r.z - b.rotation.z) * lerpFactor;
+          }
+        });
+      } else {
+        const boneList = ['thighR', 'thighL', 'shinR', 'shinL', 'footR', 'footL', 'upper_armR', 'upper_armL', 'forearmR', 'forearmL'];
+        boneList.forEach(name => {
+          const b = getB(name);
+          const r = getR(name);
+          if (b && r) {
+            b.rotation.x += (r.x - b.rotation.x) * lerpFactor;
+            b.rotation.y += (r.y - b.rotation.y) * lerpFactor;
+            b.rotation.z += (r.z - b.rotation.z) * lerpFactor;
+          }
+        });
+      }
 
       const t = clock.getElapsedTime();
-      if (chest && getR('chest')) {
+      if (!player.isAttacking && chest && getR('chest')) {
         chest.rotation.x = getR('chest').x + Math.sin(t * 2.4) * 0.025;
         chest.rotation.y += ((getR('chest').y || 0) - chest.rotation.y) * lerpFactor;
         chest.rotation.z += ((getR('chest').z || 0) - chest.rotation.z) * lerpFactor;
@@ -1036,6 +1612,8 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
 
   updatePlayer(dt);
+  updateZombies(dt);
+  updateParticles(dt);
   updateCamera();
   updateGems(dt);
 

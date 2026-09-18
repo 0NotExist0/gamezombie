@@ -373,11 +373,19 @@
         font-size: 12px;
       }
     }
+    @keyframes grabPulse {
+      from { transform: translateX(-50%) scale(1); }
+      to { transform: translateX(-50%) scale(1.05); }
+    }
   </style>
 </head>
 <body>
   <canvas id="game-canvas"></canvas>
   <div id="crosshair"></div>
+  <div id="damage-overlay" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; box-shadow: inset 0 0 0px rgba(239, 71, 111, 0); transition: box-shadow 0.15s ease-out; z-index: 35;"></div>
+  <div id="grab-alert" style="display: none; position: absolute; top: 18%; left: 50%; transform: translateX(-50%); background: rgba(217, 4, 41, 0.92); border: 2.5px solid #ffd166; padding: 12px 26px; border-radius: 14px; color: white; font-weight: 800; font-size: 16px; letter-spacing: 0.8px; box-shadow: 0 8px 32px rgba(217, 4, 41, 0.65); pointer-events: none; z-index: 55; text-align: center; animation: grabPulse 0.4s infinite alternate;">
+    🧟 ZOMBIE ADDOSSO! MUOVITI PER STACCARLO! (<span id="struggle-timer" style="color: #ffd166; font-size: 18px;">2.0s</span>)
+  </div>
 
   <div id="ui-container">
     <div id="top-left" class="hud-card">
@@ -396,6 +404,13 @@
       <div class="stats">
         <div class="stat-item">Gemme raccolte: <span id="gems-count">0</span> / <span id="gems-total">10</span></div>
         <div class="stat-item">Zombie eliminati: <span id="zombies-count" style="color: #ff595e; font-weight: bold;">0</span> / <span id="zombies-total">8</span></div>
+      </div>
+      <div class="stat-item" style="margin-top: 4px; display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 12px; font-weight: 700; color: #fff;">Salute:</span>
+        <div style="width: 130px; height: 12px; background: rgba(0,0,0,0.55); border-radius: 6px; border: 1px solid rgba(255,255,255,0.25); overflow: hidden; position: relative;">
+          <div id="player-health-bar" style="width: 100%; height: 100%; background: linear-gradient(90deg, #06d6a0, #48cae4); transition: width 0.12s ease-out;"></div>
+        </div>
+        <span id="player-health-text" style="font-size: 11px; font-weight: 800; color: #06d6a0;">100%</span>
       </div>
     </div>
 

@@ -113,6 +113,53 @@ function playZombieDeath() {
   osc.stop(audioCtx.currentTime + 0.65);
 }
 
+function playZombieGrab() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(75, audioCtx.currentTime);
+  osc.frequency.linearRampToValueAtTime(140, audioCtx.currentTime + 0.20);
+  gain.gain.setValueAtTime(0.26, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.25);
+}
+
+function playZombieBite() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  // Low crunchy bite
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(120, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(45, audioCtx.currentTime + 0.12);
+  gain.gain.setValueAtTime(0.18, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.12);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.12);
+}
+
+function playZombieBreakOff() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  // Heavy push impact + whoosh
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(220, audioCtx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(35, audioCtx.currentTime + 0.30);
+  gain.gain.setValueAtTime(0.45, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.30);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + 0.30);
+}
+
 // --- Procedural Low-Poly Terrain ---
 const terrainSize = 300;
 const terrainSegments = 80;
@@ -286,6 +333,41 @@ for (let i = 0; i < totalGems; i++) {
   gems.push(gem);
 }
 
+// --- Shared 2-Bone Analytical Inverse Kinematics (IK) Engine ---
+const LEG_L1 = 0.33734; // Thigh segment (hip to knee)
+const LEG_L2 = 0.35128; // Shin segment (knee to ankle)
+const REST_ANKLE_Y = 0.22; // Ground sole neutral ankle level
+const REST_ANKLE_Z = 0.04; // Resting forward offset
+const REST_HIP_Y = 0.90;   // Rest pelvis height
+
+const D_REST = Math.sqrt(Math.pow(REST_ANKLE_Y - REST_HIP_Y, 2) + Math.pow(REST_ANKLE_Z, 2));
+const GAMMA_REST = Math.atan2(REST_ANKLE_Z, REST_HIP_Y - REST_ANKLE_Y);
+const COS_ALPHA1_REST = (LEG_L1 * LEG_L1 + D_REST * D_REST - LEG_L2 * LEG_L2) / (2 * LEG_L1 * D_REST);
+const ALPHA1_REST = Math.acos(Math.max(-1, Math.min(1, COS_ALPHA1_REST)));
+const THETA1_REST = GAMMA_REST + ALPHA1_REST;
+const COS_ALPHA2_REST = (LEG_L1 * LEG_L1 + LEG_L2 * LEG_L2 - D_REST * D_REST) / (2 * LEG_L1 * LEG_L2);
+const THETA_KNEE_REST = Math.PI - Math.acos(Math.max(-1, Math.min(1, COS_ALPHA2_REST)));
+
+function solveLegIK(hipY, hipZ, targetY, targetZ, restThighX, restShinX) {
+  const dy = targetY - hipY; // dy is negative
+  const dz = targetZ - hipZ;
+  const dist = Math.sqrt(dy * dy + dz * dz);
+  const d = Math.max(Math.abs(LEG_L1 - LEG_L2) + 0.005, Math.min((LEG_L1 + LEG_L2) * 0.996, dist));
+
+  const gamma = Math.atan2(dz, -dy);
+  const cosAlpha1 = Math.max(-1, Math.min(1, (LEG_L1 * LEG_L1 + d * d - LEG_L2 * LEG_L2) / (2 * LEG_L1 * d)));
+  const alpha1 = Math.acos(cosAlpha1);
+  const theta1 = gamma + alpha1;
+
+  const cosAlpha2 = Math.max(-1, Math.min(1, (LEG_L1 * LEG_L1 + LEG_L2 * LEG_L2 - d * d) / (2 * LEG_L1 * LEG_L2)));
+  const thetaKnee = Math.PI - Math.acos(cosAlpha2);
+
+  return {
+    thighX: restThighX - (theta1 - THETA1_REST),
+    shinX: restShinX + (thetaKnee - THETA_KNEE_REST)
+  };
+}
+
 // --- Player State & Bone Hierarchy ---
 const player = {
   group: new THREE.Group(),
@@ -302,6 +384,11 @@ const player = {
   jumpStrength: 9.8,
   facingAngle: 0,
   walkCycle: 0,
+  // Health & Grab status
+  hp: 100,
+  maxHp: 100,
+  isGrabbed: false,
+  grabbedBy: null,
   // Combat stats & state
   isAttacking: false,
   attackTimer: 0,
@@ -439,6 +526,54 @@ function updateZombieHealthBar(z) {
   }
 }
 
+// --- Player Health UI & Visual Feedback ---
+const playerHealthBar = document.getElementById('player-health-bar');
+const playerHealthText = document.getElementById('player-health-text');
+const damageOverlay = document.getElementById('damage-overlay');
+const grabAlert = document.getElementById('grab-alert');
+const struggleTimerElem = document.getElementById('struggle-timer');
+
+function updatePlayerHealthUI(dt) {
+  // Slow passive regeneration when not under attack
+  if (!player.isGrabbed && player.hp < player.maxHp) {
+    player.hp = Math.min(player.maxHp, player.hp + 2.0 * dt);
+  }
+
+  if (playerHealthBar && playerHealthText) {
+    const pct = Math.max(0, Math.min(100, Math.round((player.hp / player.maxHp) * 100)));
+    playerHealthBar.style.width = pct + '%';
+    playerHealthText.innerText = pct + '%';
+
+    if (pct > 50) {
+      playerHealthBar.style.background = 'linear-gradient(90deg, #06d6a0, #48cae4)';
+      playerHealthText.style.color = '#06d6a0';
+    } else if (pct > 25) {
+      playerHealthBar.style.background = 'linear-gradient(90deg, #ffd166, #f77f00)';
+      playerHealthText.style.color = '#ffd166';
+    } else {
+      playerHealthBar.style.background = 'linear-gradient(90deg, #d90429, #ef476f)';
+      playerHealthText.style.color = '#ef476f';
+    }
+  }
+
+  if (player.isGrabbed && player.grabbedBy) {
+    if (grabAlert) {
+      grabAlert.style.display = 'block';
+      const remaining = Math.max(0, 2.0 - player.grabbedBy.struggleTimer).toFixed(1);
+      if (struggleTimerElem) struggleTimerElem.innerText = remaining + 's';
+    }
+    if (damageOverlay) {
+      const pulse = 65 + Math.sin(clock.getElapsedTime() * 14) * 25;
+      damageOverlay.style.boxShadow = `inset 0 0 ${pulse}px rgba(217, 4, 41, 0.78)`;
+    }
+  } else {
+    if (grabAlert) grabAlert.style.display = 'none';
+    if (damageOverlay) {
+      damageOverlay.style.boxShadow = 'inset 0 0 0px rgba(217, 4, 41, 0)';
+    }
+  }
+}
+
 function spawnZombies() {
   if (!zombieTemplate) return;
 
@@ -505,8 +640,12 @@ function spawnZombies() {
       walkCycle: Math.random() * Math.PI * 2,
       wanderTimer: Math.random() * 3,
       wanderAngle: Math.random() * Math.PI * 2,
-      speed: 2.2,
-      state: 'wander'
+      speed: 3.6, // FAST CHASE SPEED!
+      state: 'wander',
+      grabCooldown: 0,
+      struggleTimer: 0,
+      biteTimer: 0,
+      ragdoll: null
     });
   }
 }
@@ -574,9 +713,33 @@ function damageZombie(z, damage, dirX, dirZ) {
   spawnHitParticles(z.position.x, z.position.y + 1.25, z.position.z);
   updateZombieHealthBar(z);
 
+  // Punching a grabbing zombie helps struggle free faster
+  if (player.grabbedBy === z) {
+    z.struggleTimer += 0.65;
+  }
+
   if (z.hp <= 0 && !z.isDead) {
     z.isDead = true;
     z.deathTimer = 0;
+
+    // Release player immediately if attached
+    if (player.grabbedBy === z) {
+      player.isGrabbed = false;
+      player.grabbedBy = null;
+    }
+
+    // Initialize physical ragdoll parameters
+    const impulse = 4.2 + Math.random() * 2.0;
+    z.ragdoll = {
+      time: 0,
+      vx: dirX * impulse,
+      vy: 2.8,
+      vz: dirZ * impulse,
+      rotZ: (Math.random() - 0.5) * 0.9,
+      limpFactor: 0,
+      settled: false
+    };
+
     zombiesDefeated++;
     const countElem = document.getElementById('zombies-count');
     if (countElem) countElem.innerText = zombiesDefeated;
@@ -593,24 +756,108 @@ function updateZombies(dt) {
       z.healthBar.barGroup.quaternion.copy(camera.quaternion);
     }
 
-    // Dead Zombie handling
+    // -------------------------------------------------------------
+    // 1. DEAD ZOMBIE RAGDOLL PHYSICS SIMULATION
+    // -------------------------------------------------------------
     if (z.isDead) {
       z.deathTimer += dt;
-      if (z.deathTimer < 1.0) {
-        // Fall backward smoothly onto ground
-        const fallProgress = Math.min(1.0, z.deathTimer / 0.75);
-        z.model.rotation.x = -fallProgress * (Math.PI / 2);
+      const rag = z.ragdoll || {
+        time: z.deathTimer,
+        vx: 0, vy: 0, vz: 0, rotZ: 0, limpFactor: 1, settled: true
+      };
+      rag.time += dt;
+
+      if (!rag.settled) {
+        // Gravity & position integration
+        rag.vy -= 26.0 * dt;
+        z.position.x += rag.vx * dt;
+        z.position.z += rag.vz * dt;
+        z.position.y += rag.vy * dt;
+
+        const groundY = getTerrainHeight(z.position.x, z.position.z);
+        if (z.position.y <= groundY) {
+          z.position.y = groundY;
+          rag.vx *= Math.pow(0.005, dt);
+          rag.vz *= Math.pow(0.005, dt);
+          if (rag.vy < -1.8) {
+            rag.vy = -rag.vy * 0.22; // subtle bounce
+          } else {
+            rag.vy = 0;
+          }
+        }
+
+        // Progression of joint limpness
+        rag.limpFactor = Math.min(1.0, rag.time * 3.8);
+
+        // Whole body tumble and tilt
+        z.model.rotation.x = -Math.min(Math.PI / 2, rag.time * 3.4);
+        z.model.rotation.z = rag.rotZ * (1.0 - rag.limpFactor * 0.4);
+
+        // Bone-by-bone ragdoll joint collapse
+        const bones = z.bones;
+        const rest = z.restRotations;
+        const getZB = (name) => bones[name] || bones[name.replace(/\./g, '')];
+        const getZR = (name) => rest[name] || rest[name.replace(/\./g, '')];
+
+        const chest = getZB('chest');
+        const head = getZB('head');
+        const armR = getZB('upper_armR');
+        const armL = getZB('upper_armL');
+        const foreR = getZB('forearmR');
+        const foreL = getZB('forearmL');
+        const thighR = getZB('thighR');
+        const thighL = getZB('thighL');
+        const shinR = getZB('shinR');
+        const shinL = getZB('shinL');
+
+        // Spine and head slump backward
+        if (chest && getZR('chest')) chest.rotation.x = (getZR('chest').x || 0) - 0.60 * rag.limpFactor;
+        if (head && getZR('head')) {
+          head.rotation.x = -0.55 * rag.limpFactor;
+          head.rotation.z = 0.40 * rag.limpFactor;
+        }
+
+        // Arms fall limp and loose with gravity
+        if (armR && getZR('upper_armR')) {
+          armR.rotation.y = getZR('upper_armR').y + 0.50 * rag.limpFactor;
+          armR.rotation.x = getZR('upper_armR').x + 0.60 * rag.limpFactor;
+        }
+        if (armL && getZR('upper_armL')) {
+          armL.rotation.y = getZR('upper_armL').y + 0.50 * rag.limpFactor;
+          armL.rotation.x = getZR('upper_armL').x - 0.60 * rag.limpFactor;
+        }
+        if (foreR) foreR.rotation.x = 0.55 * rag.limpFactor;
+        if (foreL) foreL.rotation.x = 0.55 * rag.limpFactor;
+
+        // Knees buckle and legs splay outward as hips strike ground
+        if (thighR) thighR.rotation.x = 0.38 * rag.limpFactor;
+        if (thighL) thighL.rotation.x = 0.28 * rag.limpFactor;
+        if (shinR) shinR.rotation.x = 0.78 * rag.limpFactor;
+        if (shinL) shinL.rotation.x = 0.68 * rag.limpFactor;
+
+        if (rag.time > 1.8 && Math.abs(rag.vy) < 0.1) {
+          rag.settled = true;
+        }
       } else {
-        // Sink into ground
-        z.position.y -= 0.45 * dt;
-        if (z.deathTimer > 3.2 && z.group.parent) {
-          scene.remove(z.group);
+        // Settled corpse sinks into the ground after 2.5s
+        if (z.deathTimer > 2.5) {
+          z.position.y -= 0.45 * dt;
+          if (z.deathTimer > 4.5 && z.group.parent) {
+            scene.remove(z.group);
+          }
         }
       }
+      z.group.position.copy(z.position);
       continue;
     }
 
-    // Hit flash handling
+    // -------------------------------------------------------------
+    // 2. ALIVE ZOMBIE: TIMERS & HIT FLASH
+    // -------------------------------------------------------------
+    if (z.grabCooldown > 0) {
+      z.grabCooldown -= dt;
+    }
+
     if (z.hitFlashTime > 0) {
       z.hitFlashTime -= dt;
       const flash = z.hitFlashTime > 0;
@@ -627,40 +874,175 @@ function updateZombies(dt) {
     z.velocity.x *= Math.pow(0.005, dt);
     z.velocity.z *= Math.pow(0.005, dt);
 
-    // AI logic: Detection distance to player
     const dx = player.position.x - z.position.x;
     const dz = player.position.z - z.position.z;
     const distToPlayer = Math.sqrt(dx * dx + dz * dz);
+
+    // -------------------------------------------------------------
+    // 3. GRAB / LATCH ATTACK STATE (RAGDOLL ARMS + 2-BONE IK LEGS)
+    // -------------------------------------------------------------
+    if (z.state === 'grab') {
+      // 1. Zombie locked tightly in front of player
+      const pFwdX = Math.sin(player.facingAngle);
+      const pFwdZ = Math.cos(player.facingAngle);
+      const targetX = player.position.x + pFwdX * 0.95;
+      const targetZ = player.position.z + pFwdZ * 0.95;
+
+      z.position.x += (targetX - z.position.x) * Math.min(1.0, 18.0 * dt);
+      z.position.z += (targetZ - z.position.z) * Math.min(1.0, 18.0 * dt);
+      z.position.y = getTerrainHeight(z.position.x, z.position.z);
+
+      // Face towards player
+      z.facingAngle = Math.atan2(-pFwdX, -pFwdZ);
+      z.group.position.copy(z.position);
+      z.group.rotation.y = z.facingAngle;
+
+      // 2. Continuous player health drain
+      player.hp = Math.max(0, player.hp - 11.0 * dt);
+      z.biteTimer += dt;
+      if (z.biteTimer >= 0.42) {
+        z.biteTimer = 0;
+        playZombieBite();
+      }
+
+      // 3. Struggle detection: player moving actively for 2 seconds
+      const playerIsMoving = (Math.abs(touchInputFwd) > 0.05 || Math.abs(touchInputRight) > 0.05 ||
+        keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'] ||
+        keys['ArrowUp'] || keys['ArrowDown'] || keys['ArrowLeft'] || keys['ArrowRight'] ||
+        !player.isGrounded);
+
+      if (playerIsMoving) {
+        z.struggleTimer += dt;
+      }
+
+      if (z.struggleTimer >= 2.0) {
+        // BREAK OFF!
+        z.state = 'chase';
+        player.isGrabbed = false;
+        player.grabbedBy = null;
+        z.grabCooldown = 3.2; // Grace period
+        z.struggleTimer = 0;
+
+        // Push zombie away violently
+        z.velocity.x = pFwdX * 9.5;
+        z.velocity.z = pFwdZ * 9.5;
+        playZombieBreakOff();
+      }
+
+      // 4. Ragdoll arms locked onto player's shoulders + 2-Bone IK legs
+      const bones = z.bones;
+      const rest = z.restRotations;
+      const getZB = (name) => bones[name] || bones[name.replace(/\./g, '')];
+      const getZR = (name) => rest[name] || rest[name.replace(/\./g, '')];
+
+      const armR = getZB('upper_armR');
+      const armL = getZB('upper_armL');
+      const foreR = getZB('forearmR');
+      const foreL = getZB('forearmL');
+      const chest = getZB('chest');
+      const head = getZB('head');
+      const thighR = getZB('thighR');
+      const thighL = getZB('thighL');
+      const shinR = getZB('shinR');
+      const shinL = getZB('shinL');
+      const footR = getZB('footR');
+      const footL = getZB('footL');
+
+      const time = clock.getElapsedTime();
+      const tremble = Math.sin(time * 20.0) * 0.06;
+
+      // Arms: Ragdoll grip wrapped around player's neck/shoulders
+      if (armR && getZR('upper_armR')) {
+        armR.rotation.y = getZR('upper_armR').y - 1.58;
+        armR.rotation.x = getZR('upper_armR').x + 0.22 + tremble;
+        armR.rotation.z = 0.42;
+      }
+      if (foreR) foreR.rotation.x = -0.72 + tremble;
+
+      if (armL && getZR('upper_armL')) {
+        armL.rotation.y = getZR('upper_armL').y - 1.58;
+        armL.rotation.x = getZR('upper_armL').x - 0.22 - tremble;
+        armL.rotation.z = -0.42;
+      }
+      if (foreL) foreL.rotation.x = -0.72 - tremble;
+
+      // Chest lunges forward with biting struggle
+      if (chest && getZR('chest')) {
+        chest.rotation.x = -0.32;
+        chest.rotation.y = Math.sin(time * 12.0) * 0.10;
+      }
+      if (head && getZR('head')) {
+        head.rotation.x = 0.30 + Math.sin(time * 14.0) * 0.18;
+      }
+
+      // LEGS BECOME 2-BONE IK:
+      // Sample exact terrain slope under each foot
+      const groundY = z.position.y;
+      const footOffsetSide = 0.16;
+      const cosZ = Math.cos(z.facingAngle);
+      const sinZ = Math.sin(z.facingAngle);
+
+      const fXR = z.position.x + cosZ * footOffsetSide;
+      const fZR = z.position.z - sinZ * footOffsetSide;
+      const fXL = z.position.x - cosZ * footOffsetSide;
+      const fZL = z.position.z + sinZ * footOffsetSide;
+
+      const slopeDeltaR = Math.max(-0.4, Math.min(0.4, getTerrainHeight(fXR, fZR) - groundY));
+      const slopeDeltaL = Math.max(-0.4, Math.min(0.4, getTerrainHeight(fXL, fZL) - groundY));
+
+      const ikR = solveLegIK(REST_HIP_Y, 0.0, REST_ANKLE_Y + slopeDeltaR, 0.05, getZR('thighR').x, getZR('shinR').x);
+      const ikL = solveLegIK(REST_HIP_Y, 0.0, REST_ANKLE_Y + slopeDeltaL, -0.05, getZR('thighL').x, getZR('shinL').x);
+
+      if (thighR) thighR.rotation.x = ikR.thighX;
+      if (shinR) shinR.rotation.x = ikR.shinX;
+      if (footR) footR.rotation.x = getZR('footR').x + slopeDeltaR * 1.5;
+
+      if (thighL) thighL.rotation.x = ikL.thighX;
+      if (shinL) shinL.rotation.x = ikL.shinX;
+      if (footL) footL.rotation.x = getZR('footL').x + slopeDeltaL * 1.5;
+
+      continue; // Skip normal wander/chase while grabbing
+    }
+
+    // -------------------------------------------------------------
+    // 4. ALIVE ZOMBIE: CHASE, SPEED-UP & GRAB INITIATION
+    // -------------------------------------------------------------
+    // Check if close enough to initiate GRAB attack
+    if (distToPlayer < 1.45 && z.grabCooldown <= 0 && !player.isGrabbed) {
+      z.state = 'grab';
+      player.isGrabbed = true;
+      player.grabbedBy = z;
+      z.struggleTimer = 0;
+      z.biteTimer = 0;
+      playZombieGrab();
+      continue;
+    }
 
     let moveSpeed = 0;
     let targetAngle = z.facingAngle;
 
     if (distToPlayer < 24.0) {
-      // Chase player
+      // Fast, aggressive chase!
       z.state = 'chase';
       targetAngle = Math.atan2(dx, dz);
-      if (distToPlayer > 1.35) {
-        moveSpeed = z.speed; // 2.2 m/s
-      } else {
-        moveSpeed = 0; // In contact with player
-      }
+      moveSpeed = z.speed; // 3.6 m/s
     } else {
       // Wander / Patrol
       z.state = 'wander';
       z.wanderTimer -= dt;
       if (z.wanderTimer <= 0) {
-        z.wanderTimer = 3.5 + Math.random() * 4.0;
+        z.wanderTimer = 3.0 + Math.random() * 3.5;
         z.wanderAngle += (Math.random() - 0.5) * 2.2;
       }
       targetAngle = z.wanderAngle;
-      moveSpeed = 0.85; // Slow shuffle
+      moveSpeed = 1.0;
     }
 
-    // Smooth turn towards targetAngle
+    // Smooth rapid turn towards targetAngle
     let diff = targetAngle - z.facingAngle;
     while (diff < -Math.PI) diff += Math.PI * 2;
     while (diff > Math.PI) diff -= Math.PI * 2;
-    z.facingAngle += diff * 5.0 * dt;
+    z.facingAngle += diff * 7.5 * dt;
 
     // Movement integration
     const fwdX = Math.sin(z.facingAngle) * moveSpeed;
@@ -696,7 +1078,13 @@ function updateZombies(dt) {
     z.group.position.copy(z.position);
     z.group.rotation.y = z.facingAngle;
 
-    // Procedural Zombie Shambling Gait Animation
+    // Fast and energetic procedural shambler animation
+    const isWalking = moveSpeed > 0.05;
+    if (isWalking) {
+      z.walkCycle += dt * (z.state === 'chase' ? 7.8 : 3.8); // Much faster!
+    }
+    const cycle = z.walkCycle;
+
     const bones = z.bones;
     const rest = z.restRotations;
     const getZB = (name) => bones[name] || bones[name.replace(/\./g, '')];
@@ -713,46 +1101,40 @@ function updateZombies(dt) {
     const chest = getZB('chest');
     const head = getZB('head');
 
-    const isWalking = moveSpeed > 0.05;
-    if (isWalking) {
-      z.walkCycle += dt * (z.state === 'chase' ? 4.2 : 2.5);
-    }
-    const cycle = z.walkCycle;
-
-    // Limping shambling legs
+    // Rapid limping legs
     if (thighR && getZR('thighR')) {
       const legR = Math.sin(cycle);
       const legL = -Math.sin(cycle);
-      thighR.rotation.x = getZR('thighR').x + legR * 0.38;
-      thighL.rotation.x = getZR('thighL').x + legL * 0.32;
-      if (shinR && getZR('shinR')) shinR.rotation.x = getZR('shinR').x + Math.max(0, -legR) * 0.42;
-      if (shinL && getZR('shinL')) shinL.rotation.x = getZR('shinL').x + Math.max(0, -legL) * 0.35;
+      thighR.rotation.x = getZR('thighR').x + legR * 0.44;
+      thighL.rotation.x = getZR('thighL').x + legL * 0.38;
+      if (shinR && getZR('shinR')) shinR.rotation.x = getZR('shinR').x + Math.max(0, -legR) * 0.52;
+      if (shinL && getZR('shinL')) shinL.rotation.x = getZR('shinL').x + Math.max(0, -legL) * 0.45;
     }
 
-    // Outstretched zombie arms with twitching bob
+    // Outstretched zombie arms with fast bobbing
     if (armR && getZR('upper_armR')) {
-      armR.rotation.x = getZR('upper_armR').x + Math.sin(cycle + 0.3) * 0.10;
-      armR.rotation.y = getZR('upper_armR').y - 1.38 + Math.sin(cycle * 0.7) * 0.07;
+      armR.rotation.x = getZR('upper_armR').x + Math.sin(cycle + 0.3) * 0.16;
+      armR.rotation.y = getZR('upper_armR').y - 1.40 + Math.sin(cycle * 0.9) * 0.12;
     }
     if (armL && getZR('upper_armL')) {
-      armL.rotation.x = getZR('upper_armL').x - Math.sin(cycle - 0.3) * 0.10;
-      armL.rotation.y = getZR('upper_armL').y - 1.38 - Math.sin(cycle * 0.7) * 0.07;
+      armL.rotation.x = getZR('upper_armL').x - Math.sin(cycle - 0.3) * 0.16;
+      armL.rotation.y = getZR('upper_armL').y - 1.40 - Math.sin(cycle * 0.9) * 0.12;
     }
     if (foreR && getZR('forearmR')) {
-      foreR.rotation.x = getZR('forearmR').x + 0.18 + Math.cos(cycle) * 0.06;
+      foreR.rotation.x = getZR('forearmR').x + 0.20 + Math.cos(cycle) * 0.10;
     }
     if (foreL && getZR('forearmL')) {
-      foreL.rotation.x = getZR('forearmL').x + 0.18 - Math.cos(cycle) * 0.06;
+      foreL.rotation.x = getZR('forearmL').x + 0.20 - Math.cos(cycle) * 0.10;
     }
 
     // Torso stagger & hunch
     if (chest && getZR('chest')) {
-      chest.rotation.x = (getZR('chest').x || 0) - 0.15 + (z.hitFlashTime > 0 ? 0.30 : 0);
-      chest.rotation.z = (getZR('chest').z || 0) + Math.sin(cycle * 0.5) * 0.10;
+      chest.rotation.x = (getZR('chest').x || 0) - 0.20 + (z.hitFlashTime > 0 ? 0.32 : 0);
+      chest.rotation.z = (getZR('chest').z || 0) + Math.sin(cycle * 0.6) * 0.14;
     }
     if (head && getZR('head')) {
-      head.rotation.z = (getZR('head').z || 0) + 0.16 + Math.sin(cycle * 0.8) * 0.06;
-      head.rotation.x = (getZR('head').x || 0) + 0.08;
+      head.rotation.z = (getZR('head').z || 0) + 0.16 + Math.sin(cycle * 0.9) * 0.10;
+      head.rotation.x = (getZR('head').x || 0) + 0.12;
     }
   }
 }
@@ -1129,7 +1511,7 @@ function updatePlayer(dt) {
 
   const isMoving = Math.abs(inputFwd) > 0.05 || Math.abs(inputRight) > 0.05;
   const isSprinting = !!keys['ShiftLeft'] || !!keys['ShiftRight'] || touchSprinting;
-  const currentSpeed = player.moveSpeed * (isSprinting ? player.sprintMultiplier : 1.0);
+  const currentSpeed = player.moveSpeed * (isSprinting ? player.sprintMultiplier : 1.0) * (player.isGrabbed ? 0.65 : 1.0);
 
   if (isMoving) {
     // Combine into normalized move vector
@@ -1247,44 +1629,6 @@ function updatePlayer(dt) {
   const chest = getB('chest');
   const hips = getB('hips');
   const head = getB('head');
-
-  // Exact anatomical bone lengths measured from character rig
-  const LEG_L1 = 0.33734; // Thigh segment (hip to knee)
-  const LEG_L2 = 0.35128; // Shin segment (knee to ankle)
-  const REST_ANKLE_Y = 0.22; // Ground sole neutral ankle level
-  const REST_ANKLE_Z = 0.04; // Resting forward offset
-  const REST_HIP_Y = 0.90;   // Rest pelvis height
-
-  // Precomputed reference triangle constants
-  const D_REST = Math.sqrt(Math.pow(REST_ANKLE_Y - REST_HIP_Y, 2) + Math.pow(REST_ANKLE_Z, 2));
-  const GAMMA_REST = Math.atan2(REST_ANKLE_Z, REST_HIP_Y - REST_ANKLE_Y);
-  const COS_ALPHA1_REST = (LEG_L1 * LEG_L1 + D_REST * D_REST - LEG_L2 * LEG_L2) / (2 * LEG_L1 * D_REST);
-  const ALPHA1_REST = Math.acos(Math.max(-1, Math.min(1, COS_ALPHA1_REST)));
-  const THETA1_REST = GAMMA_REST + ALPHA1_REST;
-  const COS_ALPHA2_REST = (LEG_L1 * LEG_L1 + LEG_L2 * LEG_L2 - D_REST * D_REST) / (2 * LEG_L1 * LEG_L2);
-  const THETA_KNEE_REST = Math.PI - Math.acos(Math.max(-1, Math.min(1, COS_ALPHA2_REST)));
-
-  // Analytical 2-Bone Inverse Kinematics Solver (Law of Cosines)
-  function solveLegIK(hipY, hipZ, targetY, targetZ, restThighX, restShinX) {
-    const dy = targetY - hipY; // dy is negative
-    const dz = targetZ - hipZ;
-    const dist = Math.sqrt(dy * dy + dz * dz);
-    // Clamp to valid reachable range
-    const d = Math.max(Math.abs(LEG_L1 - LEG_L2) + 0.005, Math.min((LEG_L1 + LEG_L2) * 0.996, dist));
-
-    const gamma = Math.atan2(dz, -dy);
-    const cosAlpha1 = Math.max(-1, Math.min(1, (LEG_L1 * LEG_L1 + d * d - LEG_L2 * LEG_L2) / (2 * LEG_L1 * d)));
-    const alpha1 = Math.acos(cosAlpha1);
-    const theta1 = gamma + alpha1;
-
-    const cosAlpha2 = Math.max(-1, Math.min(1, (LEG_L1 * LEG_L1 + LEG_L2 * LEG_L2 - d * d) / (2 * LEG_L1 * LEG_L2)));
-    const thetaKnee = Math.PI - Math.acos(cosAlpha2);
-
-    return {
-      thighX: restThighX - (theta1 - THETA1_REST),
-      shinX: restShinX + (thetaKnee - THETA_KNEE_REST)
-    };
-  }
 
   if (thighR && getR('thighR')) {
     if (!player.isGrounded) {
@@ -1613,6 +1957,7 @@ function animate() {
 
   updatePlayer(dt);
   updateZombies(dt);
+  updatePlayerHealthUI(dt);
   updateParticles(dt);
   updateCamera();
   updateGems(dt);

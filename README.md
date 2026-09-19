@@ -16,17 +16,24 @@ Un gioco d'avventura 3D in terza e prima persona sviluppato con **Three.js**, **
 - **Rig dell'Armature con Controlli IK in Blender**:
   - Scheletro potenziato nei file `character.blend` e `game.blend` con controller `ik_foot.L`, `ik_foot.R` e pole targets per le ginocchia `pole_knee.L`, `pole_knee.R`.
   - Vincoli IK a catena a 2 segmenti configurati con pole angle allineato al grado di riposo per animazione e posa professionale.
+- **Pistola 3D e Sistema Balistico**:
+  - Modello 3D low-poly creato e texturizzato in **Blender** (`pistol.blend` & `public/pistol.glb`) con fusto metallico, carrello sagomato con intagli posteriori, canna, guardamano con grilletto dorato, impugnatura ergonomica in polimero scuro, mire metalliche con fosfori verdi luminescenti e camera di scoppio in ottone.
+  - Doppia integrazione: agganciata alla mano destra (`hand.R`) del personaggio in 3ª persona (con posa di mira e contraccolpo d'arma) e viewmodel dedicato in 1ª persona con oscillazione naturale (bobbing & sway) e rinculo balistico reattivo.
+  - Balistica & Raycasting: colpi precisi verso il reticolo di mira con traccianti visivi proiettile ad alta velocità (`spawnBulletTracer`), scintille d'impatto sul terreno e impatto sui corpi degli zombie (danno elevato di 50 HP per eliminare i non-morti a distanza).
+  - Muzzle Flash dinamico all'estremità della canna con flash poligonale e luce puntiforme luminosa.
+  - Sistema munizioni: caricatore da 12 colpi, ricarica con tasto `R` (o automatica all'esaurimento) e indicatore munizioni in tempo reale nell'HUD.
+  - Effetti sonori completi Web Audio per le armi da fuoco: sparo corposo con transient bass punch e crack esplosivo (`playGunshot`), ricarica metallica a tre tempi con sgancio caricatore e scarrellamento (`playReload`) e clic a secco (`playDryFire`).
 - **Zombie e Sistema di Combattimento coi Pugni**:
   - Modello Zombie 3D creato in Blender (`zombies.blend` & `zombies.glb`) derivato dalla base del personaggio con pelle putrefatta verde, occhi luminescenti rossi, mascella spalancata con zanne, squarcio sul petto con costole esposte e abiti lacerati.
   - IA Zombie autonoma: vagamento procedurale e inseguimento del giocatore a vista con andatura zoppicante e braccia tese in avanti.
-  - Combattimento corpo a corpo: sferra pugni veloci e potenti (sinistro e destro alternati) con Click Sinistro, tasto `F` o pulsante touch `PUGNO 🥊`.
+  - Combattimento corpo a corpo: sferra pugni veloci e potenti (sinistro e destro alternati) con tasto `E` o pulsante touch `PUGNO 🥊`.
   - Reazioni d'impatto con particelle di sangue/scintille, knockback, flash di danno sui materiali e barre della salute sospese sopra la testa dei non-morti.
   - Effetti sonori completi Web Audio: fendente del pugno nell'aria, impatto del colpo sul bersaglio, grugnito di dolore e verso di morte degli zombie.
 - **Doppia Visuale**: Alterna tra 3ª persona (orbital camera) e 1ª persona (vista occhi) con il tasto `V`.
 - **Controlli Completi per Smartphone & Tablet**:
   - Joystick analogico virtuale a 360°.
   - Swipe con tocco per rotazione libera della telecamera.
-  - Pulsanti touch dedicati per Pugno (`🥊`), Salto e Corsa.
+  - Pulsanti touch dedicati per Spara (`🔫`), Pugno (`🥊`), Salto e Corsa.
 - **Personalizzazione Mouse**: Toggle rapidi per Inversione Asse X (`X`) e Asse Y (`I`).
 - **Mondo Procedurale Low-Poly**: Terreno deformato proceduralmente con alberi, rocce e gemme collezionabili con effetti sonori Web Audio.
 
@@ -69,7 +76,9 @@ npm run build
 | Azione | PC (Tastiera e Mouse) | Smartphone / Touch |
 |---|---|---|
 | **Movimento** | `W, A, S, D` o Frecce | Joystick virtuale (Basso a sinistra) |
-| **Pugno / Attacco** | `Click Sinistro` o `F` / `E` | Pulsante `PUGNO 🥊` (Basso a destra) |
+| **Spara con la Pistola** | `Click Sinistro` o `F` | Pulsante `SPARA 🔫` (Basso a destra) |
+| **Ricarica Pistola** | `R` o Clic su Munizioni | Tocco sull'indicatore munizioni |
+| **Pugno Corpo a Corpo** | `E` | Pulsante `PUGNO 🥊` (Basso a destra) |
 | **Salto** | `SPAZIO` | Pulsante `SALTA` |
 | **Scatto / Corsa** | `SHIFT` (Tieni premuto) | Pulsante `CORSA` (Toggle) |
 | **Cambia Visuale (1ª/3ª)** | `V` | Badge `Visuale` in alto a sinistra |

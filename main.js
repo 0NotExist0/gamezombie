@@ -160,6 +160,110 @@ function playZombieBreakOff() {
   osc.stop(audioCtx.currentTime + 0.30);
 }
 
+// --- Weapon & Gunfire Sound Effects ---
+function playGunshot() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const t = audioCtx.currentTime;
+
+  // 1. Low transient bass punch
+  const osc = audioCtx.createOscillator();
+  const oscGain = audioCtx.createGain();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(280, t);
+  osc.frequency.exponentialRampToValueAtTime(36, t + 0.22);
+  oscGain.gain.setValueAtTime(0.65, t);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+  osc.connect(oscGain);
+  oscGain.connect(audioCtx.destination);
+  osc.start(t);
+  osc.stop(t + 0.22);
+
+  // 2. High explosive crack (filtered white noise burst)
+  const bufferSize = Math.floor(audioCtx.sampleRate * 0.16);
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (audioCtx.sampleRate * 0.038));
+  }
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = buffer;
+
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.setValueAtTime(1800, t);
+  filter.frequency.exponentialRampToValueAtTime(450, t + 0.16);
+  filter.Q.setValueAtTime(1.1, t);
+
+  const noiseGain = audioCtx.createGain();
+  noiseGain.gain.setValueAtTime(0.75, t);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+
+  noise.connect(filter);
+  filter.connect(noiseGain);
+  noiseGain.connect(audioCtx.destination);
+  noise.start(t);
+}
+
+function playReload() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const t = audioCtx.currentTime;
+
+  // 1. Mag release / eject click
+  const osc1 = audioCtx.createOscillator();
+  const gain1 = audioCtx.createGain();
+  osc1.type = 'sawtooth';
+  osc1.frequency.setValueAtTime(580, t);
+  osc1.frequency.exponentialRampToValueAtTime(160, t + 0.09);
+  gain1.gain.setValueAtTime(0.28, t);
+  gain1.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+  osc1.connect(gain1);
+  gain1.connect(audioCtx.destination);
+  osc1.start(t);
+  osc1.stop(t + 0.09);
+
+  // 2. Fresh mag insert click (after 0.38s)
+  const osc2 = audioCtx.createOscillator();
+  const gain2 = audioCtx.createGain();
+  osc2.type = 'square';
+  osc2.frequency.setValueAtTime(420, t + 0.38);
+  osc2.frequency.exponentialRampToValueAtTime(840, t + 0.46);
+  gain2.gain.setValueAtTime(0.32, t + 0.38);
+  gain2.gain.exponentialRampToValueAtTime(0.001, t + 0.48);
+  osc2.connect(gain2);
+  gain2.connect(audioCtx.destination);
+  osc2.start(t + 0.38);
+  osc2.stop(t + 0.48);
+
+  // 3. Slide chambering rack (after 0.78s)
+  const osc3 = audioCtx.createOscillator();
+  const gain3 = audioCtx.createGain();
+  osc3.type = 'sawtooth';
+  osc3.frequency.setValueAtTime(880, t + 0.78);
+  osc3.frequency.exponentialRampToValueAtTime(220, t + 0.94);
+  gain3.gain.setValueAtTime(0.38, t + 0.78);
+  gain3.gain.exponentialRampToValueAtTime(0.001, t + 0.94);
+  osc3.connect(gain3);
+  gain3.connect(audioCtx.destination);
+  osc3.start(t + 0.78);
+  osc3.stop(t + 0.94);
+}
+
+function playDryFire() {
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(950, t);
+  osc.frequency.exponentialRampToValueAtTime(320, t + 0.05);
+  gain.gain.setValueAtTime(0.22, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(t);
+  osc.stop(t + 0.05);
+}
+
 // --- Procedural Low-Poly Terrain ---
 const terrainSize = 300;
 const terrainSegments = 80;
@@ -369,6 +473,8 @@ function solveLegIK(hipY, hipZ, targetY, targetZ, restThighX, restShinX) {
 }
 
 // --- Player State & Bone Hierarchy ---
+let touchInputFwd = 0;
+let touchInputRight = 0;
 const player = {
   group: new THREE.Group(),
   model: null,
@@ -432,10 +538,257 @@ loader.load('/character.glb', (gltf) => {
   });
 
   player.group.add(player.model);
+  attachPistolToHand();
   console.log('🎮 Low-Poly Adventure — Not Exist Game Productions');
   console.log('👤 Developed by: 0Not_Exist0');
   console.log('🦴 Character and IK bones loaded successfully:', Object.keys(player.bones));
 });
+
+// --- 3D Pistol State & Weapons System ---
+const pistolState = {
+  model: null,
+  thirdPerson: null,
+  fpsGun: null,
+  fpsHand: null,
+  fpsGroup: new THREE.Group(),
+  ammo: 12,
+  maxAmmo: 12,
+  isReloading: false,
+  reloadTimer: 0,
+  reloadDuration: 1.1,
+  fireCooldown: 0,
+  fireRate: 0.18,
+  damage: 50,
+  recoilZ: 0,
+  recoilRotX: 0,
+  aimTimer: 0,
+  recoilKick: 0,
+  flashTimer: 0,
+  triggerPull: 0
+};
+
+// Add camera to scene and FPS viewmodel to camera
+scene.add(camera);
+camera.add(pistolState.fpsGroup);
+pistolState.fpsGroup.position.set(0.14, -0.105, -0.27);
+pistolState.fpsGroup.rotation.set(0.03, -0.05, 0.02);
+pistolState.fpsGroup.visible = false;
+
+// --- Procedural Low-Poly FPS Right Hand & Forearm (held by player) ---
+function createFPSRightHand() {
+  const handGroup = new THREE.Group();
+  handGroup.name = 'FPS_Right_Hand_Group';
+
+  // Exact skin and clothing materials matching character.glb
+  const skinMat = new THREE.MeshStandardMaterial({
+    color: 0xf2c7a5,
+    roughness: 0.72,
+    metalness: 0.04,
+    flatShading: true
+  });
+
+  const shirtMat = new THREE.MeshStandardMaterial({
+    color: 0x1f8cd9,
+    roughness: 0.75,
+    metalness: 0.05,
+    flatShading: true
+  });
+
+  const cuffMat = new THREE.MeshStandardMaterial({
+    color: 0x145a8a,
+    roughness: 0.80,
+    metalness: 0.05,
+    flatShading: true
+  });
+
+  const makeBox = (w, h, d, mat, pos, rot) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    if (pos) mesh.position.set(pos[0], pos[1], pos[2]);
+    if (rot) mesh.rotation.set(rot[0], rot[1], rot[2]);
+    handGroup.add(mesh);
+    return mesh;
+  };
+
+  // 1. Palm & back of hand (wrapping right and rear of the pistol grip)
+  makeBox(0.024, 0.056, 0.046, skinMat, [0.017, -0.040, 0.024], [0.10, -0.10, 0.06]);
+
+  // 2. Thumb base & tip (resting along the left side of the grip below slide)
+  makeBox(0.016, 0.022, 0.026, skinMat, [-0.014, -0.018, 0.022], [-0.15, 0.20, -0.10]);
+  makeBox(0.014, 0.018, 0.022, skinMat, [-0.016, -0.009, 0.004], [0.12, 0.35, -0.22]);
+
+  // 3. Trigger / Index finger (reaching into trigger guard and pulling trigger)
+  makeBox(0.013, 0.015, 0.024, skinMat, [0.017, -0.008, 0.006], [0.05, 0.0, -0.15]);
+  const indexTip = makeBox(0.011, 0.013, 0.026, skinMat, [0.011, -0.007, -0.016], [0.10, 0.08, -0.32]);
+  handGroup.userData.indexTip = indexTip;
+
+  // 4. Middle, Ring, and Pinky fingers wrapping around the front face of the grip
+  const fingerConfigs = [
+    { y: -0.023, z: 0.017 },
+    { y: -0.040, z: 0.015 },
+    { y: -0.057, z: 0.013 }
+  ];
+  fingerConfigs.forEach(cfg => {
+    // Right side knuckle
+    makeBox(0.018, 0.014, 0.016, skinMat, [0.018, cfg.y, cfg.z], [0.05, -0.05, 0.0]);
+    // Front grip face wrap
+    makeBox(0.030, 0.013, 0.014, skinMat, [0.003, cfg.y, cfg.z - 0.014], [0.05, -0.05, 0.0]);
+    // Left side curling tip
+    makeBox(0.012, 0.013, 0.014, skinMat, [-0.013, cfg.y, cfg.z - 0.006], [0.05, -0.05, 0.15]);
+  });
+
+  // 5. Wrist (connects hand base back and down-right)
+  makeBox(0.038, 0.042, 0.044, skinMat, [0.032, -0.062, 0.058], [0.20, -0.22, 0.25]);
+
+  // 6. Shirt Cuff ring (wrist junction)
+  makeBox(0.050, 0.030, 0.052, cuffMat, [0.046, -0.085, 0.082], [0.38, -0.42, 0.28]);
+
+  // 7. Forearm Sleeve (blue shirt extending down, right, and back into lower corner)
+  makeBox(0.058, 0.26, 0.054, shirtMat, [0.10, -0.18, 0.17], [0.48, -0.45, 0.28]);
+
+  return handGroup;
+}
+
+// Instantiate FPS right hand and add to fpsGroup
+pistolState.fpsHand = createFPSRightHand();
+pistolState.fpsGroup.add(pistolState.fpsHand);
+
+function attachPistolToHand() {
+  const hand = player.bones['Hand_R'] || player.bones['hand.R'] || player.bones['handR'];
+  if (hand && pistolState.thirdPerson && !hand.children.includes(pistolState.thirdPerson)) {
+    hand.add(pistolState.thirdPerson);
+    pistolState.thirdPerson.position.set(0, -0.012, 0.025);
+    pistolState.thirdPerson.rotation.set(0, Math.PI, 0);
+    pistolState.thirdPerson.scale.set(0.92, 0.92, 0.92);
+    pistolState.thirdPerson.visible = !isFirstPerson;
+    console.log('🔫 Pistola 3D agganciata con successo alla mano del personaggio!');
+  }
+}
+
+// Load Pistol GLB
+loader.load('/pistol.glb', (gltf) => {
+  pistolState.model = gltf.scene;
+
+  gltf.scene.traverse((child) => {
+    if (child.isMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+      if (child.material) {
+        child.material.flatShading = true;
+        child.material.needsUpdate = true;
+      }
+    }
+  });
+
+  // 1. Third-Person Pistol (pointing forward along +Z in right hand)
+  pistolState.thirdPerson = gltf.scene.clone();
+  attachPistolToHand();
+
+  // 2. First-Person Viewmodel Pistol (pointing forward along -Z into screen, held by FPS hand)
+  pistolState.fpsGun = gltf.scene.clone();
+  pistolState.fpsGun.position.set(0, 0, 0);
+  pistolState.fpsGun.rotation.set(0, 0, 0);
+  pistolState.fpsGun.scale.set(0.80, 0.80, 0.80);
+  pistolState.fpsGroup.add(pistolState.fpsGun);
+  pistolState.fpsGroup.visible = isFirstPerson;
+
+  console.log('🔫 Pistola 3D caricata e agganciata alla mano destra in 1ª e 3ª persona!');
+});
+
+// Muzzle Flash VFX
+const muzzleFlash = new THREE.Group();
+const flashCone1 = new THREE.Mesh(
+  new THREE.ConeGeometry(0.045, 0.15, 5),
+  new THREE.MeshBasicMaterial({ color: 0xffea00 })
+);
+flashCone1.rotateX(Math.PI / 2);
+muzzleFlash.add(flashCone1);
+
+const flashCone2 = new THREE.Mesh(
+  new THREE.ConeGeometry(0.03, 0.11, 4),
+  new THREE.MeshBasicMaterial({ color: 0xff9f1c })
+);
+flashCone2.rotateZ(Math.PI / 4);
+flashCone2.rotateX(Math.PI / 2);
+muzzleFlash.add(flashCone2);
+
+const flashLight = new THREE.PointLight(0xffb703, 6.0, 8.0);
+muzzleFlash.add(flashLight);
+muzzleFlash.visible = false;
+scene.add(muzzleFlash);
+
+function triggerMuzzleFlash(pos, dir) {
+  muzzleFlash.position.copy(pos);
+  if (dir) {
+    muzzleFlash.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+  }
+  muzzleFlash.visible = true;
+  pistolState.flashTimer = 0.05;
+}
+
+// Bullet Tracers VFX
+const activeTracers = [];
+const tracerGeo = new THREE.CylinderGeometry(0.015, 0.015, 1.0, 4);
+tracerGeo.rotateX(Math.PI / 2);
+const tracerMat = new THREE.MeshBasicMaterial({
+  color: 0xffe066,
+  transparent: true,
+  opacity: 0.95
+});
+
+function spawnBulletTracer(startPos, endPos) {
+  const dist = startPos.distanceTo(endPos);
+  if (dist < 0.1) return;
+
+  const mesh = new THREE.Mesh(tracerGeo, tracerMat.clone());
+  mesh.position.copy(startPos).lerp(endPos, 0.5);
+  mesh.scale.set(1, 1, dist);
+  mesh.lookAt(endPos);
+  scene.add(mesh);
+
+  activeTracers.push({
+    mesh,
+    life: 0.08,
+    maxLife: 0.08
+  });
+}
+
+function updateTracers(dt) {
+  for (let i = activeTracers.length - 1; i >= 0; i--) {
+    const t = activeTracers[i];
+    t.life -= dt;
+    if (t.life <= 0) {
+      scene.remove(t.mesh);
+      activeTracers.splice(i, 1);
+    } else {
+      t.mesh.material.opacity = (t.life / t.maxLife) * 0.95;
+    }
+  }
+}
+
+// Terrain impact spark particles
+function spawnTerrainImpactParticles(x, y, z) {
+  for (let i = 0; i < 7; i++) {
+    const pMat = new THREE.MeshBasicMaterial({
+      color: Math.random() > 0.4 ? 0xffd166 : 0xcccccc
+    });
+    const pMesh = new THREE.Mesh(hitParticleGeo, pMat);
+    pMesh.position.set(x, y, z);
+    const speed = 2.0 + Math.random() * 3.0;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.random() * Math.PI * 0.5;
+    scene.add(pMesh);
+    hitParticles.push({
+      mesh: pMesh,
+      vx: Math.cos(theta) * Math.cos(phi) * speed,
+      vy: Math.sin(phi) * speed + 0.8,
+      vz: Math.sin(theta) * Math.cos(phi) * speed,
+      life: 0.25,
+      maxLife: 0.25
+    });
+  }
+}
 
 // --- Combat Hit Particles ---
 const hitParticles = [];
@@ -748,6 +1101,232 @@ function damageZombie(z, damage, dirX, dirZ) {
     const countElem = document.getElementById('zombies-count');
     if (countElem) countElem.innerText = zombiesDefeated;
     playZombieDeath();
+  }
+}
+
+// --- 3D Pistol Combat Mechanics ---
+const ammoDisplayElem = document.getElementById('ammo-display');
+const reloadStatusElem = document.getElementById('reload-status');
+
+function updateAmmoUI() {
+  if (ammoDisplayElem) {
+    ammoDisplayElem.innerText = `${pistolState.ammo} / ${pistolState.maxAmmo}`;
+    if (pistolState.ammo === 0) {
+      ammoDisplayElem.style.color = '#ff595e';
+    } else if (pistolState.ammo <= 4) {
+      ammoDisplayElem.style.color = '#ffd166';
+    } else {
+      ammoDisplayElem.style.color = '#06d6a0';
+    }
+  }
+  if (reloadStatusElem) {
+    reloadStatusElem.style.display = pistolState.isReloading ? 'inline-block' : 'none';
+  }
+}
+
+function reloadGun() {
+  if (pistolState.isReloading || pistolState.ammo === pistolState.maxAmmo) return;
+  pistolState.isReloading = true;
+  pistolState.reloadTimer = pistolState.reloadDuration;
+  playReload();
+  updateAmmoUI();
+}
+
+function shootGun() {
+  if (!gameStarted) return;
+  if (player.hp <= 0) return;
+  if (pistolState.fireCooldown > 0) return;
+  if (pistolState.isReloading) return;
+
+  if (pistolState.ammo <= 0) {
+    playDryFire();
+    reloadGun();
+    return;
+  }
+
+  pistolState.ammo--;
+  pistolState.fireCooldown = pistolState.fireRate;
+  pistolState.aimTimer = 0.85;
+  pistolState.recoilKick = 1.0;
+  pistolState.triggerPull = 1.0;
+  updateAmmoUI();
+
+  playGunshot();
+
+  // Point-blank shot while grabbed by zombie
+  if (player.isGrabbed && player.grabbedBy) {
+    damageZombie(player.grabbedBy, pistolState.damage * 1.5, 0, 0);
+  }
+
+  // Camera recoil kick
+  if (isFirstPerson) {
+    pistolState.recoilZ = 0.07;
+    pistolState.recoilRotX = 0.16;
+    cameraPitch += 0.018;
+  }
+
+  // Determine muzzle point in world space
+  const muzzlePos = new THREE.Vector3();
+  let activeMuzzle = null;
+  if (isFirstPerson && pistolState.fpsGun) {
+    activeMuzzle = pistolState.fpsGun.getObjectByName('Muzzle_Point') || pistolState.fpsGun;
+  } else if (pistolState.thirdPerson) {
+    activeMuzzle = pistolState.thirdPerson.getObjectByName('Muzzle_Point') || pistolState.thirdPerson;
+  }
+
+  if (activeMuzzle) {
+    activeMuzzle.getWorldPosition(muzzlePos);
+  } else {
+    muzzlePos.copy(camera.position);
+  }
+
+  // Raycast from camera center through crosshair
+  const raycaster = new THREE.Raycaster();
+  raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+  const ray = raycaster.ray;
+
+  // 1. Ray-Capsule intersection with all alive zombies
+  let closestHitZ = null;
+  let minZombieDist = 150.0;
+  let zombieHitPos = new THREE.Vector3();
+
+  for (let i = 0; i < zombies.length; i++) {
+    const z = zombies[i];
+    if (z.isDead) continue;
+
+    const base = new THREE.Vector3(z.position.x, z.position.y + 0.2, z.position.z);
+    const w0 = ray.origin.clone().sub(base);
+    const v = new THREE.Vector3(0, 1, 0);
+    const u = ray.direction;
+
+    const a = u.dot(u);
+    const b = u.dot(v);
+    const c = v.dot(v);
+    const d = u.dot(w0);
+    const e = v.dot(w0);
+
+    const denom = a * c - b * b;
+    if (Math.abs(denom) > 1e-6) {
+      const s = (b * e - c * d) / denom;
+      const t = (a * e - b * d) / denom;
+
+      if (s > 0.5 && s < minZombieDist && t >= -0.2 && t <= 1.85) {
+        const pRay = ray.origin.clone().addScaledVector(u, s);
+        const pZ = base.clone().addScaledVector(v, Math.max(0, Math.min(1.65, t)));
+        const distToAxis = pRay.distanceTo(pZ);
+
+        if (distToAxis <= 0.85) {
+          minZombieDist = s;
+          closestHitZ = z;
+          zombieHitPos.copy(pRay);
+        }
+      }
+    }
+  }
+
+  // 2. Terrain collision intersection
+  let terrainHitPos = null;
+  let terrainDist = 150.0;
+  const terrainIntersects = raycaster.intersectObject(terrainMesh);
+  if (terrainIntersects.length > 0) {
+    terrainHitPos = terrainIntersects[0].point;
+    terrainDist = terrainIntersects[0].distance;
+  }
+
+  let finalHitPos = new THREE.Vector3();
+  if (closestHitZ && minZombieDist < terrainDist) {
+    finalHitPos.copy(zombieHitPos);
+    damageZombie(closestHitZ, pistolState.damage, ray.direction.x, ray.direction.z);
+  } else if (terrainHitPos) {
+    finalHitPos.copy(terrainHitPos);
+    spawnTerrainImpactParticles(finalHitPos.x, finalHitPos.y, finalHitPos.z);
+  } else {
+    finalHitPos.copy(ray.origin).addScaledVector(ray.direction, 80.0);
+  }
+
+  // 3. Glowing high-speed bullet tracer
+  spawnBulletTracer(muzzlePos, finalHitPos);
+
+  // 4. Muzzle flash VFX
+  const flashDir = finalHitPos.clone().sub(muzzlePos).normalize();
+  triggerMuzzleFlash(muzzlePos, flashDir);
+
+  // Auto-reload after last bullet
+  if (pistolState.ammo === 0) {
+    setTimeout(() => {
+      if (pistolState.ammo === 0 && !pistolState.isReloading) {
+        reloadGun();
+      }
+    }, 350);
+  }
+}
+
+function updateWeapons(dt) {
+  if (pistolState.fireCooldown > 0) {
+    pistolState.fireCooldown -= dt;
+  }
+  if (pistolState.aimTimer > 0) {
+    pistolState.aimTimer -= dt;
+  }
+  if (pistolState.recoilKick > 0) {
+    pistolState.recoilKick = Math.max(0, pistolState.recoilKick - dt * 6.0);
+  }
+  if (pistolState.triggerPull > 0) {
+    pistolState.triggerPull = Math.max(0, pistolState.triggerPull - dt * 14.0);
+  }
+  if (pistolState.isReloading) {
+    pistolState.reloadTimer -= dt;
+    if (pistolState.reloadTimer <= 0) {
+      pistolState.ammo = pistolState.maxAmmo;
+      pistolState.isReloading = false;
+      updateAmmoUI();
+    }
+  }
+  if (pistolState.flashTimer > 0) {
+    pistolState.flashTimer -= dt;
+    if (pistolState.flashTimer <= 0 && muzzleFlash) {
+      muzzleFlash.visible = false;
+    }
+  }
+
+  // Ensure third person pistol is safely attached to player's right hand if loaded
+  if (pistolState.thirdPerson && (!pistolState.thirdPerson.parent || !player.bones['Hand_R']?.children.includes(pistolState.thirdPerson))) {
+    attachPistolToHand();
+  }
+
+  updateTracers(dt);
+
+  // FPS Viewmodel Sway & Recoil with visible right hand & arm
+  if (isFirstPerson && pistolState.fpsGroup) {
+    const isMoving = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'] || Math.hypot(touchInputFwd, touchInputRight) > 0.1;
+    const swayAmp = isMoving ? 0.008 : 0.002;
+    const swaySpeed = isMoving ? (keys['ShiftLeft'] ? 13 : 8.5) : 3;
+    const time = clock.getElapsedTime();
+
+    const targetX = 0.14 + Math.sin(time * swaySpeed) * swayAmp;
+    const targetY = -0.105 + Math.abs(Math.cos(time * swaySpeed)) * (swayAmp * 0.75) - (pistolState.isReloading ? 0.07 : 0);
+    const targetZ = -0.27 + pistolState.recoilZ;
+
+    pistolState.fpsGroup.position.x += (targetX - pistolState.fpsGroup.position.x) * Math.min(1.0, 16 * dt);
+    pistolState.fpsGroup.position.y += (targetY - pistolState.fpsGroup.position.y) * Math.min(1.0, 16 * dt);
+    pistolState.fpsGroup.position.z += (targetZ - pistolState.fpsGroup.position.z) * Math.min(1.0, 20 * dt);
+
+    const targetRotX = 0.03 + pistolState.recoilRotX + (pistolState.isReloading ? 0.22 : 0);
+    const targetRotY = -0.05;
+    const targetRotZ = 0.02 + (pistolState.isReloading ? -0.32 : 0);
+    pistolState.fpsGroup.rotation.x += (targetRotX - pistolState.fpsGroup.rotation.x) * Math.min(1.0, 18 * dt);
+    pistolState.fpsGroup.rotation.y += (targetRotY - pistolState.fpsGroup.rotation.y) * Math.min(1.0, 18 * dt);
+    pistolState.fpsGroup.rotation.z += (targetRotZ - pistolState.fpsGroup.rotation.z) * Math.min(1.0, 12 * dt);
+
+    // Trigger finger reactive pull animation
+    if (pistolState.fpsHand && pistolState.fpsHand.userData.indexTip) {
+      const pull = pistolState.triggerPull;
+      pistolState.fpsHand.userData.indexTip.position.z = -0.016 + pull * 0.005;
+      pistolState.fpsHand.userData.indexTip.rotation.x = 0.10 + pull * 0.20;
+    }
+
+    pistolState.recoilZ = Math.max(0, pistolState.recoilZ - dt * 0.55);
+    pistolState.recoilRotX = Math.max(0, pistolState.recoilRotX - dt * 1.4);
   }
 }
 
@@ -1466,7 +2045,15 @@ function toggleCameraMode() {
   camModeText.innerText = isFirstPerson ? '1ª PERSONA' : '3ª PERSONA';
   camToggleBtn.style.background = isFirstPerson ? '#ffd166' : '#06d6a0';
   camToggleBtn.style.color = isFirstPerson ? '#3d2e00' : '#0b3c31';
-  crosshair.style.display = isFirstPerson ? 'block' : 'none';
+  crosshair.style.display = 'block';
+
+  // Toggle pistol models between 1st and 3rd person
+  if (pistolState.fpsGroup) {
+    pistolState.fpsGroup.visible = isFirstPerson;
+  }
+  if (pistolState.thirdPerson) {
+    pistolState.thirdPerson.visible = !isFirstPerson;
+  }
 
   // In 1st person, hide head & hair so they don't clip the camera view
   player.headParts.forEach(p => p.visible = !isFirstPerson);
@@ -1510,6 +2097,15 @@ if (invertToggleBtn) {
   });
 }
 
+// Click / tap on ammo card to reload
+if (ammoDisplayElem) {
+  ammoDisplayElem.parentElement.style.cursor = 'pointer';
+  ammoDisplayElem.parentElement.addEventListener('click', (e) => {
+    e.stopPropagation();
+    reloadGun();
+  });
+}
+
 // --- Controls (Keyboard & Mouse) ---
 const keys = {};
 window.addEventListener('keydown', (e) => {
@@ -1523,19 +2119,18 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyI') {
     toggleInvertY();
   }
-  if (e.code === 'KeyF' || e.code === 'KeyE') {
+  if (e.code === 'KeyF') {
+    shootGun();
+  }
+  if (e.code === 'KeyR') {
+    reloadGun();
+  }
+  if (e.code === 'KeyE') {
     punchAttack();
   }
 });
 window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
-});
-
-// Mouse Left Click Punch
-window.addEventListener('mousedown', (e) => {
-  if (e.button === 0 && gameStarted && (document.pointerLockElement === document.body || isFirstPerson)) {
-    punchAttack();
-  }
 });
 
 // Pointer Lock & Touch Detection
@@ -1581,40 +2176,100 @@ overlay.addEventListener('touchend', (e) => {
   if (e.target === overlay) startGame(e);
 });
 
-document.addEventListener('pointerlockchange', () => {
-  if (!isTouchDevice && document.pointerLockElement !== document.body) {
-    gameStarted = false;
-    overlay.style.display = 'flex';
-    overlay.style.pointerEvents = 'auto';
-    setTimeout(() => overlay.style.opacity = '1', 10);
+// Canvas click to focus and re-lock cursor seamlessly
+canvas.addEventListener('click', (e) => {
+  if (!gameStarted) {
+    startGame(e);
+  } else if (!isTouchDevice && document.pointerLockElement !== document.body) {
+    document.body.requestPointerLock?.();
   }
 });
 
-// Mouse Look - Standard FPS/TPS conventions
-window.addEventListener('mousemove', (e) => {
+// Pointer lock change: maintain gameplay and hide overlay
+document.addEventListener('pointerlockchange', () => {
   if (document.pointerLockElement === document.body) {
-    const sensitivity = 0.0024;
-    // Horizontal rotation (Yaw) - Inverted by default as requested
-    const yawDelta = (invertX ? -e.movementX : e.movementX) * sensitivity;
-    cameraYaw += yawDelta;
+    gameStarted = true;
+    overlay.style.display = 'none';
+  }
+});
 
-    // Moving mouse UP looks UP (pitch increases):
-    // e.movementY is negative on mouse UP.
-    // So with invertY=false: -e.movementY is positive -> pitch increases -> camera looks UP!
-    const pitchDelta = (invertY ? e.movementY : -e.movementY) * sensitivity;
-    cameraPitch += pitchDelta;
+// Unified Mouse Controls: Supports both Pointer Lock and Click & Drag
+let isMouseDown = false;
+let lastMouseX = 0;
+let lastMouseY = 0;
 
-    if (isFirstPerson) {
-      cameraPitch = Math.max(-1.45, Math.min(1.45, cameraPitch));
+window.addEventListener('mousedown', (e) => {
+  if (e.target.closest('#instructions-overlay') || e.target.closest('.hud-card')) return;
+
+  isMouseDown = true;
+  lastMouseX = e.clientX;
+  lastMouseY = e.clientY;
+
+  if (gameStarted && !isTouchDevice && document.pointerLockElement !== document.body) {
+    document.body.requestPointerLock?.();
+  }
+
+  if (e.button === 0 && gameStarted) {
+    shootGun();
+  } else if (e.button === 2 && gameStarted) {
+    pistolState.aimTimer = 1.6;
+  }
+});
+
+window.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+});
+
+window.addEventListener('mouseup', () => {
+  isMouseDown = false;
+});
+
+// Mouse Look - Standard FPS/TPS conventions (works smoothly when moving AND when stationary!)
+window.addEventListener('mousemove', (e) => {
+  if (!gameStarted) return;
+
+  let moveX = 0;
+  let moveY = 0;
+
+  if (document.pointerLockElement === document.body) {
+    moveX = e.movementX || 0;
+    moveY = e.movementY || 0;
+  } else if (isMouseDown || isFirstPerson) {
+    if (e.movementX !== undefined && (Math.abs(e.movementX) > 0 || Math.abs(e.movementY) > 0)) {
+      moveX = e.movementX;
+      moveY = e.movementY;
     } else {
-      cameraPitch = Math.max(-0.65, Math.min(0.70, cameraPitch));
+      moveX = e.clientX - lastMouseX;
+      moveY = e.clientY - lastMouseY;
     }
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+  } else {
+    lastMouseX = e.clientX;
+    lastMouseY = e.clientY;
+    return;
+  }
+
+  // Filter out any coordinate jumps when re-locking pointer
+  if (Math.abs(moveX) > 250 || Math.abs(moveY) > 250) return;
+
+  const sensitivity = 0.0024;
+  const yawDelta = (invertX ? -moveX : moveX) * sensitivity;
+  cameraYaw += yawDelta;
+
+  const pitchDelta = (invertY ? moveY : -moveY) * sensitivity;
+  cameraPitch += pitchDelta;
+
+  if (isFirstPerson) {
+    cameraPitch = Math.max(-1.45, Math.min(1.45, cameraPitch));
+  } else {
+    cameraPitch = Math.max(-0.65, Math.min(0.70, cameraPitch));
   }
 });
 
 // --- SMARTPHONE / TOUCH CONTROLS LOGIC ---
-let touchInputFwd = 0;
-let touchInputRight = 0;
+touchInputFwd = 0;
+touchInputRight = 0;
 let touchSprinting = false;
 
 // 1. Virtual Joystick (Move)
@@ -1745,7 +2400,17 @@ if (touchLookZone) {
   window.addEventListener('touchcancel', resetLook, { passive: true });
 }
 
-// 3. Touch Buttons (Punch, Jump & Sprint)
+// 3. Touch Buttons (Shoot, Punch, Jump & Sprint)
+const touchBtnShoot = document.getElementById('touch-btn-shoot');
+if (touchBtnShoot) {
+  touchBtnShoot.addEventListener('touchstart', (e) => {
+    if (!gameStarted) return;
+    e.preventDefault();
+    e.stopPropagation();
+    shootGun();
+  }, { passive: false });
+}
+
 const touchBtnPunch = document.getElementById('touch-btn-punch');
 if (touchBtnPunch) {
   touchBtnPunch.addEventListener('touchstart', (e) => {
@@ -1831,21 +2496,24 @@ function updatePlayer(dt) {
     player.velocity.x = moveDirX * currentSpeed;
     player.velocity.z = moveDirZ * currentSpeed;
 
-    // In 3rd person: character faces movement direction
+    // In 3rd person: character faces movement direction (or camera yaw when aiming/shooting)
     // In 1st person: character faces camera direction
-    const targetAngle = isFirstPerson ? cameraYaw : Math.atan2(moveDirX, moveDirZ);
+    const targetAngle = (isFirstPerson || pistolState.aimTimer > 0) ? cameraYaw : Math.atan2(moveDirX, moveDirZ);
     
     // Shortest angular interpolation
     let diff = targetAngle - player.facingAngle;
     while (diff < -Math.PI) diff += Math.PI * 2;
     while (diff > Math.PI) diff -= Math.PI * 2;
-    player.facingAngle += diff * 14 * dt;
+    player.facingAngle += diff * 16 * dt;
   } else {
     // Decelerate smoothly
     player.velocity.x *= Math.pow(0.001, dt);
     player.velocity.z *= Math.pow(0.001, dt);
-    if (isFirstPerson) {
-      player.facingAngle = cameraYaw;
+    if (isFirstPerson || pistolState.aimTimer > 0) {
+      let diff = cameraYaw - player.facingAngle;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      player.facingAngle += diff * 18 * dt;
     }
   }
 
@@ -1931,9 +2599,62 @@ function updatePlayer(dt) {
   const armL = getB('upper_armL');
   const foreR = getB('forearmR');
   const foreL = getB('forearmL');
+  const handR = getB('handR') || getB('Hand_R');
   const chest = getB('chest');
   const hips = getB('hips');
   const head = getB('head');
+
+  // Punch attack animation helper (shared across moving, airborne, and idle states)
+  const applyPunchAnimation = () => {
+    const progress = 1.0 - Math.max(0, player.attackTimer / player.attackDuration);
+    const strike = progress < 0.35 
+      ? (progress / 0.35) 
+      : Math.pow(1.0 - (progress - 0.35) / 0.65, 2.0);
+
+    const isRight = player.attackSide === 0;
+
+    if (isRight) {
+      if (armR) {
+        armR.rotation.y = getR('upper_armR').y - 1.48 * strike;
+        armR.rotation.x = getR('upper_armR').x + 0.28 * strike;
+        armR.rotation.z = (getR('upper_armR').z || 0) + 0.15 * strike;
+      }
+      if (foreR) {
+        foreR.rotation.x = getR('forearmR').x - 0.55 * strike;
+      }
+      if (armL) {
+        armL.rotation.y = getR('upper_armL').y - 0.65;
+        armL.rotation.x = getR('upper_armL').x - 0.22;
+      }
+      if (foreL) {
+        foreL.rotation.x = getR('forearmL').x - 0.85;
+      }
+      if (chest && getR('chest')) {
+        chest.rotation.y = (getR('chest').y || 0) - 0.32 * strike;
+        chest.rotation.x = (getR('chest').x || 0) - 0.14 * strike;
+      }
+    } else {
+      if (armL) {
+        armL.rotation.y = getR('upper_armL').y - 1.48 * strike;
+        armL.rotation.x = getR('upper_armL').x - 0.28 * strike;
+        armL.rotation.z = (getR('upper_armL').z || 0) - 0.15 * strike;
+      }
+      if (foreL) {
+        foreL.rotation.x = getR('forearmL').x - 0.55 * strike;
+      }
+      if (armR) {
+        armR.rotation.y = getR('upper_armR').y - 0.65;
+        armR.rotation.x = getR('upper_armR').x + 0.22;
+      }
+      if (foreR) {
+        foreR.rotation.x = getR('forearmR').x - 0.85;
+      }
+      if (chest && getR('chest')) {
+        chest.rotation.y = (getR('chest').y || 0) + 0.32 * strike;
+        chest.rotation.x = (getR('chest').x || 0) - 0.14 * strike;
+      }
+    }
+  };
 
   if (thighR && getR('thighR')) {
     if (!player.isGrounded) {
@@ -1946,10 +2667,18 @@ function updatePlayer(dt) {
       if (footR) footR.rotation.x += (getR('footR').x - 0.32 - footR.rotation.x) * jumpLerp;
       if (footL) footL.rotation.x += (getR('footL').x - 0.32 - footL.rotation.x) * jumpLerp;
 
-      // Arms flare outward for aerial balance
+      // Arms flare outward for aerial balance (or aim forward if shooting)
       if (armR) {
-        armR.rotation.y += (getR('upper_armR').y - 0.35 - armR.rotation.y) * jumpLerp;
-        armR.rotation.x += (getR('upper_armR').x + 0.30 - armR.rotation.x) * jumpLerp;
+        if (pistolState.aimTimer > 0) {
+          armR.rotation.y += (getR('upper_armR').y + 1.20 + cameraPitch * 0.65 - armR.rotation.y) * jumpLerp;
+          armR.rotation.x += (getR('upper_armR').x - armR.rotation.x) * jumpLerp;
+          armR.rotation.z += ((getR('upper_armR').z || 0) - (pistolState.recoilKick || 0) * 0.15 - armR.rotation.z) * jumpLerp;
+          if (handR) handR.rotation.x += (getR('handR').x + 1.20 + cameraPitch * 0.40 - (pistolState.recoilKick || 0) * 0.35 - handR.rotation.x) * jumpLerp;
+        } else {
+          armR.rotation.y += (getR('upper_armR').y + 0.40 - armR.rotation.y) * jumpLerp;
+          armR.rotation.x += (getR('upper_armR').x + 0.20 - armR.rotation.x) * jumpLerp;
+          if (handR) handR.rotation.x += (getR('handR').x + 0.20 - handR.rotation.x) * jumpLerp;
+        }
       }
       if (armL) {
         armL.rotation.y += (getR('upper_armL').y - 0.35 - armL.rotation.y) * jumpLerp;
@@ -2052,58 +2781,6 @@ function updatePlayer(dt) {
       shinL.rotation.x = resL.ik.shinX;
       if (footL) footL.rotation.x = getR('footL').x + resL.anklePitch;
 
-      // Punch attack animation helper
-      const applyPunchAnimation = () => {
-        const progress = 1.0 - Math.max(0, player.attackTimer / player.attackDuration);
-        const strike = progress < 0.35 
-          ? (progress / 0.35) 
-          : Math.pow(1.0 - (progress - 0.35) / 0.65, 2.0);
-
-        const isRight = player.attackSide === 0;
-
-        if (isRight) {
-          if (armR) {
-            armR.rotation.y = getR('upper_armR').y - 1.48 * strike;
-            armR.rotation.x = getR('upper_armR').x + 0.28 * strike;
-            armR.rotation.z = (getR('upper_armR').z || 0) + 0.15 * strike;
-          }
-          if (foreR) {
-            foreR.rotation.x = getR('forearmR').x - 0.55 * strike;
-          }
-          if (armL) {
-            armL.rotation.y = getR('upper_armL').y - 0.65;
-            armL.rotation.x = getR('upper_armL').x - 0.22;
-          }
-          if (foreL) {
-            foreL.rotation.x = getR('forearmL').x - 0.85;
-          }
-          if (chest && getR('chest')) {
-            chest.rotation.y = (getR('chest').y || 0) - 0.32 * strike;
-            chest.rotation.x = (getR('chest').x || 0) - 0.14 * strike;
-          }
-        } else {
-          if (armL) {
-            armL.rotation.y = getR('upper_armL').y - 1.48 * strike;
-            armL.rotation.x = getR('upper_armL').x - 0.28 * strike;
-            armL.rotation.z = (getR('upper_armL').z || 0) - 0.15 * strike;
-          }
-          if (foreL) {
-            foreL.rotation.x = getR('forearmL').x - 0.55 * strike;
-          }
-          if (armR) {
-            armR.rotation.y = getR('upper_armR').y - 0.65;
-            armR.rotation.x = getR('upper_armR').x + 0.22;
-          }
-          if (foreR) {
-            foreR.rotation.x = getR('forearmR').x - 0.85;
-          }
-          if (chest && getR('chest')) {
-            chest.rotation.y = (getR('chest').y || 0) + 0.32 * strike;
-            chest.rotation.x = (getR('chest').x || 0) - 0.14 * strike;
-          }
-        }
-      };
-
       // 3. Upper Body Natural Balance & Combat Strikes
       if (player.isAttacking) {
         applyPunchAnimation();
@@ -2112,17 +2789,39 @@ function updatePlayer(dt) {
         const armAmpY = isSprinting ? 0.68 : 0.44;
         const armAmpX = isSprinting ? 0.32 : 0.18;
 
-        if (armR) {
-          armR.rotation.y = getR('upper_armR').y - armSwing * armAmpY;
-          armR.rotation.x = getR('upper_armR').x + armSwing * armAmpX;
+        // Right arm holding / aiming pistol forward in front of head (walk/sprint)
+        if (pistolState.aimTimer > 0) {
+          if (armR) {
+            armR.rotation.y = getR('upper_armR').y + 1.20 + cameraPitch * 0.65;
+            armR.rotation.x = getR('upper_armR').x;
+            armR.rotation.z = (getR('upper_armR').z || 0) - (pistolState.recoilKick || 0) * 0.15;
+          }
+          if (foreR) {
+            foreR.rotation.x = getR('forearmR').x;
+          }
+          if (handR) {
+            handR.rotation.x = getR('handR').x + 1.20 + cameraPitch * 0.40 - (pistolState.recoilKick || 0) * 0.35;
+          }
+        } else {
+          if (armR) {
+            armR.rotation.y = getR('upper_armR').y + 0.40;
+            armR.rotation.x = getR('upper_armR').x + Math.sin(cycle) * 0.08;
+          }
+          if (foreR) {
+            foreR.rotation.x = getR('forearmR').x + 0.20;
+          }
+          if (handR) {
+            handR.rotation.x = getR('handR').x + 0.20;
+          }
         }
+
+        // Left arm natural balance swing
         if (armL) {
           armL.rotation.y = getR('upper_armL').y - armSwing * armAmpY;
           armL.rotation.x = getR('upper_armL').x - armSwing * armAmpX;
         }
 
         // Forearms (elbows) dynamic flexion on forward swing
-        if (foreR) foreR.rotation.x = getR('forearmR').x - Math.max(0, -armSwing) * (isSprinting ? 0.48 : 0.30);
         if (foreL) foreL.rotation.x = getR('forearmL').x - Math.max(0, armSwing) * (isSprinting ? 0.48 : 0.30);
 
         // Spine & Chest counter-rotation and forward tilt
@@ -2150,7 +2849,7 @@ function updatePlayer(dt) {
           }
         });
       } else {
-        const boneList = ['thighR', 'thighL', 'shinR', 'shinL', 'footR', 'footL', 'upper_armR', 'upper_armL', 'forearmR', 'forearmL'];
+        const boneList = ['thighR', 'thighL', 'shinR', 'shinL', 'footR', 'footL', 'upper_armL', 'forearmL'];
         boneList.forEach(name => {
           const b = getB(name);
           const r = getR(name);
@@ -2160,6 +2859,32 @@ function updatePlayer(dt) {
             b.rotation.z += (r.z - b.rotation.z) * lerpFactor;
           }
         });
+
+        // Right arm holding / aiming pistol forward in front of head (idle)
+        if (pistolState.aimTimer > 0) {
+          if (armR) {
+            armR.rotation.y = getR('upper_armR').y + 1.20 + cameraPitch * 0.65;
+            armR.rotation.x = getR('upper_armR').x;
+            armR.rotation.z = (getR('upper_armR').z || 0) - (pistolState.recoilKick || 0) * 0.15;
+          }
+          if (foreR) {
+            foreR.rotation.x = getR('forearmR').x;
+          }
+          if (handR) {
+            handR.rotation.x = getR('handR').x + 1.20 + cameraPitch * 0.40 - (pistolState.recoilKick || 0) * 0.35;
+          }
+        } else {
+          if (armR) {
+            armR.rotation.y = getR('upper_armR').y + 0.40;
+            armR.rotation.x = getR('upper_armR').x;
+          }
+          if (foreR) {
+            foreR.rotation.x = getR('forearmR').x + 0.20;
+          }
+          if (handR) {
+            handR.rotation.x = getR('handR').x + 0.20;
+          }
+        }
       }
 
       const t = clock.getElapsedTime();
@@ -2261,6 +2986,7 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
 
   updatePlayer(dt);
+  updateWeapons(dt);
   updateZombies(dt);
   updatePlayerHealthUI(dt);
   updateParticles(dt);

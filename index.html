@@ -154,7 +154,7 @@
       height: 14px;
       transform: translate(-50%, -50%);
       pointer-events: none;
-      display: none;
+      display: block;
     }
     #crosshair::before, #crosshair::after {
       content: '';
@@ -402,8 +402,13 @@
         Mouse Y: <span id="invert-mode-text">NORMALE</span> [Premi I]
       </div>
       <div class="stats">
-        <div class="stat-item">Gemme raccolte: <span id="gems-count">0</span> / <span id="gems-total">10</span></div>
-        <div class="stat-item">Zombie eliminati: <span id="zombies-count" style="color: #ff595e; font-weight: bold;">0</span> / <span id="zombies-total">8</span></div>
+        <div class="stat-item">Gemme: <span id="gems-count">0</span> / <span id="gems-total">10</span></div>
+        <div class="stat-item">Zombie: <span id="zombies-count" style="color: #ff595e; font-weight: bold;">0</span> / <span id="zombies-total">8</span></div>
+      </div>
+      <div class="stat-item" style="margin-top: 3px; display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 12px; font-weight: 700; color: #ffd166;">Pistola 🔫:</span>
+        <span id="ammo-display" style="color: #06d6a0; font-weight: 800; font-size: 14px; letter-spacing: 0.5px;">12 / 12</span>
+        <span id="reload-status" style="display: none; color: #ff595e; font-size: 10px; font-weight: 800; background: rgba(255,89,94,0.2); padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(255,89,94,0.4); animation: grabPulse 0.4s infinite alternate;">RICARICA...</span>
       </div>
       <div class="stat-item" style="margin-top: 4px; display: flex; align-items: center; gap: 8px;">
         <span style="font-size: 12px; font-weight: 700; color: #fff;">Salute:</span>
@@ -418,11 +423,12 @@
       <div><span class="key-badge">W A S D</span> Muoviti</div>
       <div><span class="key-badge">SPACE</span> Salta</div>
       <div><span class="key-badge">SHIFT</span> Scatta</div>
-      <div><span class="key-badge">Click Sx / F</span> Pugno 🥊</div>
+      <div><span class="key-badge">Click Sx / F</span> Spara 🔫</div>
+      <div><span class="key-badge">R</span> Ricarica</div>
+      <div><span class="key-badge">E</span> Pugno 🥊</div>
       <div><span class="key-badge">V</span> Visuale (1ª/3ª)</div>
       <div><span class="key-badge">X</span> Inverti X</div>
       <div><span class="key-badge">I</span> Inverti Y</div>
-      <div><span class="key-badge">Mouse</span> Guarda attorno</div>
       <div style="border-left: 1px solid rgba(255,255,255,0.25); padding-left: 12px; font-size: 11px; opacity: 0.9;">
         <span style="color: #06d6a0; font-weight: 700;">Not Exist Game Productions</span> • Dev: <span style="color: #ffd166; font-weight: 700;">0Not_Exist0</span>
       </div>
@@ -440,6 +446,10 @@
     </div>
 
     <div id="touch-action-buttons">
+      <button id="touch-btn-shoot" class="touch-btn" aria-label="Spara" style="background: rgba(255, 183, 3, 0.92); border-color: #ffd166; color: #1a1000; width: 70px; height: 70px; box-shadow: 0 4px 18px rgba(255, 183, 3, 0.5);">
+        <span class="touch-icon" style="font-size: 26px;">🔫</span>
+        <span class="touch-text" style="font-weight: 900; color: #000;">SPARA</span>
+      </button>
       <button id="touch-btn-punch" class="touch-btn" aria-label="Pugno" style="background: rgba(231, 111, 81, 0.88); border-color: #f4a261;">
         <span class="touch-icon">🥊</span>
         <span class="touch-text">PUGNO</span>
@@ -461,8 +471,8 @@
       <h2>Low-Poly Adventure</h2>
       <div class="instructions-dev-tag">Creato & Sviluppato da: <strong>0Not_Exist0</strong></div>
       <p>Esplora il mondo low-poly con animazioni dinamiche e <strong>Cinematica Inversa (IK) alle gambe</strong> per una camminata e corsa naturale con appoggio e roll del piede!</p>
-      <p style="color: #ff595e; font-size: 14px; font-weight: bold; margin: 8px 0;">🧟 ATTENZIONE ZOMBIE: Difenditi a colpi di pugni! 🥊</p>
-      <p style="color: #48cae4; font-size: 14px;">Su PC usa <strong>WASD + Mouse + Click Sx / F</strong> per tirare pugni.<br>Su Smartphone usa il <strong>Joystick</strong>, swipe per ruotare e i pulsanti <strong>PUGNO 🥊</strong>, <strong>SALTA</strong> e <strong>CORSA</strong>!</p>
+      <p style="color: #ffd166; font-size: 15px; font-weight: bold; margin: 8px 0;">🔫 NUOVA PISTOLA EQUIPAGGIATA: Elimina gli Zombie a distanza!</p>
+      <p style="color: #48cae4; font-size: 13px;">Su PC usa <strong>Click Sinistro o F</strong> per sparare, <strong>R</strong> per ricaricare, <strong>E</strong> per i pugni corpo a corpo.<br>Su Smartphone usa il pulsante <strong>SPARA 🔫</strong>, <strong>PUGNO 🥊</strong>, <strong>SALTA</strong> e <strong>CORSA</strong>!</p>
       <button id="start-btn" class="btn-start">CLICCA O TOCCA PER GIOCARE</button>
     </div>
   </div>

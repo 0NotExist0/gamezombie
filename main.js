@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { joinRoom, selfId } from '@trystero-p2p/torrent';
 
 // --- Canvas & Renderer ---
 const canvas = document.getElementById('game-canvas');
@@ -560,21 +561,42 @@ loader.load('/character.glb', (gltf) => {
 });
 
 // =========================================================================
-// --- MULTIPLAYER CO-OP REAL-TIME NETWORKING SYSTEM (WebSockets) ---
+// --- MULTIPLAYER CO-OP SERVERLESS P2P (WebRTC & Trystero for Vercel) ---
 // =========================================================================
+const urlParams = new URLSearchParams(window.location.search);
+const currentRoomId = (urlParams.get('room') || 'gamezombie-global').trim().toLowerCase();
+
+const PLAYER_COLORS = [
+  { name: 'Blu Classico', hex: '#1f8cd9', num: 0x1f8cd9 },
+  { name: 'Rosso Cremisi', hex: '#e63946', num: 0xe63946 },
+  { name: 'Verde Smeraldo', hex: '#2a9d8f', num: 0x2a9d8f },
+  { name: 'Arancione Sole', hex: '#f4a261', num: 0xf4a261 },
+  { name: 'Viola Notte', hex: '#9d4edd', num: 0x9d4edd },
+  { name: 'Ciano Polare', hex: '#00b4d8', num: 0x00b4d8 },
+  { name: 'Giallo Oro', hex: '#e9c46a', num: 0xe9c46a },
+  { name: 'Rosa Neon', hex: '#ff4d6d', num: 0xff4d6d }
+];
+
 const networkState = {
-  ws: null,
+  room: null,
   connected: false,
   myId: null,
   myName: 'Giocatore',
-  myColor: { name: 'Blu Classico', hex: '#1f8cd9', num: 0x1f8cd9 },
-  isHost: false,
+  myColor: PLAYER_COLORS[0],
+  isHost: true,
   totalPlayers: 1,
   lastSendTime: 0,
   sendInterval: 0.040, // 25Hz state broadcast
   zombieSyncTime: 0,
   remotePlayers: new Map(), // id -> remotePlayerData
-  pendingPlayers: []
+  pendingPlayers: [],
+  // Trystero P2P Actions
+  actionState: null,
+  actionShoot: null,
+  actionPunch: null,
+  actionZombieHit: null,
+  actionHandshake: null,
+  actionZombiesSync: null
 };
 
 // 1. Nametag 2D Sprite Billboarding
@@ -838,6 +860,11 @@ function updateMultiplayerHUD() {
   const statusBadge = document.getElementById('mp-status-badge');
   const statusDot = document.getElementById('mp-status-dot');
   const statusText = document.getElementById('mp-status-text');
+  const roomNameElem = document.getElementById('mp-room-name');
+
+  if (roomNameElem) {
+    roomNameElem.innerText = currentRoomId;
+  }
 
   const total = 1 + networkState.remotePlayers.size;
   if (countElem) {
@@ -876,6 +903,34 @@ function updateMultiplayerHUD() {
       listElem.appendChild(row);
     });
   }
+}
+
+// Event Listeners per Invito e Cambio Stanza
+const copyInviteBtn = document.getElementById('mp-copy-link-btn');
+if (copyInviteBtn) {
+  copyInviteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const url = new URL(window.location.href);
+    url.searchParams.set('room', currentRoomId);
+    navigator.clipboard.writeText(url.toString()).then(() => {
+      showMultiplayerNotification('🔗 Link d\'invito copiato negli appunti!');
+    }).catch(() => {
+      prompt('Copia questo link per giocare insieme nella stanza:', url.toString());
+    });
+  });
+}
+
+const roomNameClickable = document.getElementById('mp-room-name');
+if (roomNameClickable) {
+  roomNameClickable.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const newRoom = prompt('Inserisci il nome della stanza a cui collegarti:', currentRoomId);
+    if (newRoom && newRoom.trim() && newRoom.trim().toLowerCase() !== currentRoomId) {
+      const url = new URL(window.location.href);
+      url.searchParams.set('room', newRoom.trim().toLowerCase());
+      window.location.href = url.toString();
+    }
+  });
 }
 
 // 7. Update Remote Players Loop (called every frame in animate)
@@ -1088,173 +1143,57 @@ function updateRemotePlayers(dt) {
   });
 }
 
-// 8. Network Message Handler
-function handleNetworkMessage(event) {
-  try {
-    const data = JSON.parse(event.data);
-    switch (data.type) {
-      case 'welcome':
-        networkState.connected = true;
-        networkState.myId = data.id;
-        networkState.myName = data.name;
-        networkState.myColor = data.color;
-        networkState.isHost = !!data.isHost;
-        console.log(`[Multiplayer] Connesso come ${data.name}! Host: ${networkState.isHost}`);
-        updateMultiplayerHUD();
-
-        if (player.model && data.color && data.color.num !== undefined) {
-          applyColorToModelShirt(player.model, data.color.num);
-        }
-
-        if (Array.isArray(data.players)) {
-          data.players.forEach(p => createRemotePlayer(p));
-        }
-        showMultiplayerNotification(`🎮 Connesso come ${data.name}!`);
-        break;
-
-      case 'player_joined':
-        createRemotePlayer(data.player);
-        showMultiplayerNotification(`👋 ${data.player.name} si è unito!`);
-        playBeep(580, 0.15, 'triangle');
-        break;
-
-      case 'player_left':
-        showMultiplayerNotification(`🚪 ${data.name || 'Un giocatore'} è uscito.`);
-        removeRemotePlayer(data.id);
-        break;
-
-      case 'player_renamed':
-        const rpRename = networkState.remotePlayers.get(data.id);
-        if (rpRename) {
-          rpRename.name = data.name;
-          if (rpRename.nametag) rpRename.nametag.redraw(rpRename.hp);
-          updateMultiplayerHUD();
-        }
-        break;
-
-      case 'batch_update':
-        if (Array.isArray(data.players)) {
-          data.players.forEach(p => {
-            if (p.id === networkState.myId) return;
-            const rp = networkState.remotePlayers.get(p.id);
-            if (rp) {
-              rp.targetPos.set(p.x, p.y, p.z);
-              rp.targetYaw = p.fA;
-              rp.pitch = p.cP || 0;
-              rp.isMoving = p.m === 1;
-              rp.isSprinting = p.s === 1;
-              rp.isGrounded = p.g === 1;
-              rp.walkCycle = p.wc || 0;
-              rp.isAiming = p.aim === 1;
-              if (p.atk === 1 && !rp.isAttacking) {
-                rp.isAttacking = true;
-                rp.attackTimer = 0.24;
-                rp.attackSide = p.side || 0;
-                playPunchWhoosh();
-              }
-              rp.hp = p.hp ?? rp.hp;
-            }
-          });
-        }
-        break;
-
-      case 'player_shoot':
-        if (data.id === networkState.myId) return;
-        const shooter = networkState.remotePlayers.get(data.id);
-        if (data.from && data.to) {
-          const fromVec = new THREE.Vector3(data.from.x, data.from.y, data.from.z);
-          const toVec = new THREE.Vector3(data.to.x, data.to.y, data.to.z);
-          spawnBulletTracer(fromVec, toVec);
-          const dir = toVec.clone().sub(fromVec).normalize();
-          triggerMuzzleFlash(fromVec, dir);
-
-          const dist = camera.position.distanceTo(fromVec);
-          const vol = Math.max(0.1, Math.min(1.0, 1.0 - dist / 55.0));
-          playGunshot(vol);
-
-          if (shooter) {
-            shooter.isAiming = true;
-          }
-        }
-        break;
-
-      case 'player_punch':
-        if (data.id === networkState.myId) return;
-        const puncher = networkState.remotePlayers.get(data.id);
-        if (puncher) {
-          puncher.isAttacking = true;
-          puncher.attackTimer = 0.24;
-          puncher.attackSide = data.side || 0;
-          playPunchWhoosh();
-        }
-        break;
-
-      case 'zombie_hit':
-        if (data.shooterId === networkState.myId) return;
-        const hitZombie = zombies[data.zombieIndex];
-        if (hitZombie && !hitZombie.isDead) {
-          damageZombie(hitZombie, data.damage, data.dirX, data.dirZ, true);
-        }
-        break;
-
-      case 'zombies_sync':
-        if (!networkState.isHost && Array.isArray(data.zombies)) {
-          data.zombies.forEach((zd, idx) => {
-            const z = zombies[idx];
-            if (z && !z.isDead) {
-              z.position.x += (zd.x - z.position.x) * 0.25;
-              z.position.z += (zd.z - z.position.z) * 0.25;
-              z.position.y = getTerrainHeight(z.position.x, z.position.z);
-              z.facingAngle = zd.fA;
-              z.group.position.copy(z.position);
-              z.group.rotation.y = z.facingAngle;
-              if (zd.hp !== undefined && zd.hp < z.hp) {
-                z.hp = zd.hp;
-                updateZombieHealthBar(z);
-              }
-            }
-          });
-        }
-        break;
-    }
-  } catch (e) {
-    console.error('[Multiplayer] Error parsing message:', e);
+// 8. Host Election & Migration Helper
+function checkAndUpdateHostStatus() {
+  if (!networkState.room) {
+    networkState.isHost = true;
+    return;
+  }
+  const peerIds = Object.keys(networkState.room.getPeers());
+  const allIds = [selfId, ...peerIds].sort();
+  const wasHost = networkState.isHost;
+  networkState.isHost = allIds[0] === selfId;
+  if (networkState.isHost !== wasHost) {
+    console.log(`[Multiplayer] Ruolo aggiornato: ${networkState.isHost ? '👑 HOST' : '👤 CLIENT'}`);
+    updateMultiplayerHUD();
   }
 }
 
-// 9. Send Local Player Update to Server (~25Hz)
+// 9. Send Local Player Update to Room Peers (~25Hz)
 function networkSendUpdate(dt) {
-  if (!networkState.connected || !networkState.ws || networkState.ws.readyState !== 1) return;
+  if (!networkState.actionState) return;
   networkState.lastSendTime += dt;
   if (networkState.lastSendTime < networkState.sendInterval) return;
   networkState.lastSendTime = 0;
+
+  // Broadcast only if there are other players in the room
+  if (networkState.remotePlayers.size === 0) return;
 
   const isMoving = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'] || Math.hypot(touchInputFwd, touchInputRight) > 0.05;
   const isSprinting = !!keys['ShiftLeft'] || !!keys['ShiftRight'] || touchSprinting;
 
   const packet = {
-    type: 'update',
     x: Math.round(player.position.x * 100) / 100,
     y: Math.round(player.position.y * 100) / 100,
     z: Math.round(player.position.z * 100) / 100,
-    facingAngle: Math.round(player.facingAngle * 100) / 100,
-    cameraPitch: Math.round(cameraPitch * 100) / 100,
-    isMoving: isMoving,
-    isSprinting: isSprinting,
-    isGrounded: player.isGrounded,
-    walkCycle: Math.round(player.walkCycle * 100) / 100,
-    isAiming: pistolState.aimTimer > 0,
-    isAttacking: player.isAttacking,
-    attackSide: player.attackSide,
+    fA: Math.round(player.facingAngle * 100) / 100,
+    cP: Math.round(cameraPitch * 100) / 100,
+    m: isMoving ? 1 : 0,
+    s: isSprinting ? 1 : 0,
+    g: player.isGrounded ? 1 : 0,
+    wc: Math.round(player.walkCycle * 100) / 100,
+    aim: pistolState.aimTimer > 0 ? 1 : 0,
+    atk: player.isAttacking ? 1 : 0,
+    side: player.attackSide,
     hp: Math.round(player.hp)
   };
 
   try {
-    networkState.ws.send(JSON.stringify(packet));
+    networkState.actionState.send(packet);
   } catch (e) {}
 
   // If host, periodically broadcast authoritative zombie positions (every ~180ms)
-  if (networkState.isHost && zombies.length > 0) {
+  if (networkState.isHost && networkState.actionZombiesSync && zombies.length > 0) {
     networkState.zombieSyncTime += dt;
     if (networkState.zombieSyncTime > 0.18) {
       networkState.zombieSyncTime = 0;
@@ -1267,45 +1206,209 @@ function networkSendUpdate(dt) {
         dead: z.isDead
       }));
       try {
-        networkState.ws.send(JSON.stringify({
-          type: 'zombies_sync',
-          zombies: zData
-        }));
+        networkState.actionZombiesSync.send({ zombies: zData });
       } catch (e) {}
     }
   }
 }
 
-// 10. Initialize WebSocket Client Connection
+// 10. Initialize Serverless WebRTC Room Connection (Works on Vercel & Web)
 function initMultiplayer() {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws`;
-  console.log(`[Multiplayer] Connessione a ${wsUrl}...`);
+  console.log(`[Multiplayer] Connessione P2P WebRTC alla stanza "${currentRoomId}"...`);
+  networkState.myId = selfId;
+
+  // Deterministic color assignment based on selfId
+  let hash = 0;
+  for (let i = 0; i < selfId.length; i++) {
+    hash = (hash << 5) - hash + selfId.charCodeAt(i);
+    hash |= 0;
+  }
+  const colorIndex = Math.abs(hash) % PLAYER_COLORS.length;
+  networkState.myColor = PLAYER_COLORS[colorIndex];
+  networkState.myName = `Player_${selfId.substring(0, 4)}`;
+
+  // Apply color to local player shirt
+  if (player.model && networkState.myColor.num !== undefined) {
+    applyColorToModelShirt(player.model, networkState.myColor.num);
+  }
 
   try {
-    const ws = new WebSocket(wsUrl);
-    networkState.ws = ws;
+    const room = joinRoom({
+      appId: 'not-exist-gamezombie-v1'
+    }, currentRoomId);
+    networkState.room = room;
+    networkState.connected = true;
+    updateMultiplayerHUD();
 
-    ws.onopen = () => {
-      console.log('[Multiplayer] 🎮 WebSocket connesso con successo!');
-      networkState.connected = true;
+    // 1. Handshake Action: Exchange player identity, name, color and HP
+    const actionHandshake = room.makeAction('handshake');
+    networkState.actionHandshake = actionHandshake;
+    actionHandshake.onMessage = (data, { peerId }) => {
+      console.log(`[Multiplayer] Handshake ricevuto da ${peerId}:`, data);
+      let rp = networkState.remotePlayers.get(peerId);
+      if (!rp) {
+        rp = createRemotePlayer({
+          id: peerId,
+          name: data.name || `Player_${peerId.substring(0, 4)}`,
+          color: data.color || PLAYER_COLORS[0],
+          hp: data.hp || 100
+        });
+      } else {
+        rp.name = data.name || rp.name;
+        rp.color = data.color || rp.color;
+        if (data.color && data.color.num !== undefined) {
+          applyColorToModelShirt(rp.model, data.color.num);
+        }
+        if (rp.nametag) rp.nametag.redraw(rp.hp);
+      }
       updateMultiplayerHUD();
     };
 
-    ws.onmessage = handleNetworkMessage;
+    // 2. State Sync Action (25Hz transform & animation replication)
+    const actionState = room.makeAction('state');
+    networkState.actionState = actionState;
+    actionState.onMessage = (p, { peerId }) => {
+      let rp = networkState.remotePlayers.get(peerId);
+      if (!rp) {
+        rp = createRemotePlayer({ id: peerId, name: `Player_${peerId.substring(0, 4)}` });
+      }
+      if (rp) {
+        rp.targetPos.set(p.x, p.y, p.z);
+        rp.targetYaw = p.fA;
+        rp.pitch = p.cP || 0;
+        rp.isMoving = p.m === 1;
+        rp.isSprinting = p.s === 1;
+        rp.isGrounded = p.g === 1;
+        rp.walkCycle = p.wc || 0;
+        rp.isAiming = p.aim === 1;
+        if (p.atk === 1 && !rp.isAttacking) {
+          rp.isAttacking = true;
+          rp.attackTimer = 0.24;
+          rp.attackSide = p.side || 0;
+          playPunchWhoosh();
+        }
+        rp.hp = p.hp ?? rp.hp;
+      }
+    };
 
-    ws.onclose = () => {
-      console.log('[Multiplayer] Disconnesso dal server WebSocket. Riconnessione tra 3s...');
-      networkState.connected = false;
+    // 3. Shoot Gun Action (Tracer VFX, Muzzle Flash, 3D Positional Audio)
+    const actionShoot = room.makeAction('shoot');
+    networkState.actionShoot = actionShoot;
+    actionShoot.onMessage = (data, { peerId }) => {
+      const shooter = networkState.remotePlayers.get(peerId);
+      if (data.from && data.to) {
+        const fromVec = new THREE.Vector3(data.from.x, data.from.y, data.from.z);
+        const toVec = new THREE.Vector3(data.to.x, data.to.y, data.to.z);
+        spawnBulletTracer(fromVec, toVec);
+        const dir = toVec.clone().sub(fromVec).normalize();
+        triggerMuzzleFlash(fromVec, dir);
+
+        // 3D Positional Gunshot Sound
+        const dist = camera.position.distanceTo(fromVec);
+        const vol = Math.max(0.1, Math.min(1.0, 1.0 - dist / 55.0));
+        playGunshot(vol);
+
+        if (shooter) {
+          shooter.isAiming = true;
+        }
+      }
+    };
+
+    // 4. Punch Action (Melee whoosh sound and strike animation)
+    const actionPunch = room.makeAction('punch');
+    networkState.actionPunch = actionPunch;
+    actionPunch.onMessage = (data, { peerId }) => {
+      const puncher = networkState.remotePlayers.get(peerId);
+      if (puncher) {
+        puncher.isAttacking = true;
+        puncher.attackTimer = 0.24;
+        puncher.attackSide = data.side || 0;
+        playPunchWhoosh();
+      }
+    };
+
+    // 5. Zombie Hit Action (Cooperative damage to zombies)
+    const actionZombieHit = room.makeAction('zombie_hit');
+    networkState.actionZombieHit = actionZombieHit;
+    actionZombieHit.onMessage = (data, { peerId }) => {
+      const hitZombie = zombies[data.zombieIndex];
+      if (hitZombie && !hitZombie.isDead) {
+        damageZombie(hitZombie, data.damage, data.dirX, data.dirZ, true);
+      }
+    };
+
+    // 6. Host Zombie Positions Sync
+    const actionZombiesSync = room.makeAction('zombies_sync');
+    networkState.actionZombiesSync = actionZombiesSync;
+    actionZombiesSync.onMessage = (data, { peerId }) => {
+      if (!networkState.isHost && Array.isArray(data.zombies)) {
+        data.zombies.forEach((zd, idx) => {
+          const z = zombies[idx];
+          if (z && !z.isDead) {
+            z.position.x += (zd.x - z.position.x) * 0.25;
+            z.position.z += (zd.z - z.position.z) * 0.25;
+            z.position.y = getTerrainHeight(z.position.x, z.position.z);
+            z.facingAngle = zd.fA;
+            z.group.position.copy(z.position);
+            z.group.rotation.y = z.facingAngle;
+            if (zd.hp !== undefined && zd.hp < z.hp) {
+              z.hp = zd.hp;
+              updateZombieHealthBar(z);
+            }
+          }
+        });
+      }
+    };
+
+    // Handle when a peer connects to our room
+    room.onPeerJoin = (peerId) => {
+      console.log(`[Multiplayer] 🎮 Peer connesso: ${peerId}`);
+      showMultiplayerNotification(`👋 Giocatore collegato alla stanza!`);
+      playBeep(580, 0.15, 'triangle');
+
+      // Send our handshake to the new peer so they know our name, color and HP
+      if (networkState.actionHandshake) {
+        networkState.actionHandshake.send({
+          name: networkState.myName,
+          color: networkState.myColor,
+          hp: player.hp
+        }, { target: peerId });
+      }
+
+      checkAndUpdateHostStatus();
+
+      // If we are host, send current zombie states to the new peer
+      if (networkState.isHost && networkState.actionZombiesSync && zombies.length > 0) {
+        const zData = zombies.map(z => ({
+          x: Math.round(z.position.x * 100) / 100,
+          y: Math.round(z.position.y * 100) / 100,
+          z: Math.round(z.position.z * 100) / 100,
+          fA: Math.round(z.facingAngle * 100) / 100,
+          hp: Math.round(z.hp),
+          dead: z.isDead
+        }));
+        networkState.actionZombiesSync.send({ zombies: zData }, { target: peerId });
+      }
+
       updateMultiplayerHUD();
-      setTimeout(initMultiplayer, 3000);
     };
 
-    ws.onerror = (err) => {
-      console.warn('[Multiplayer] Avviso WebSocket:', err);
+    // Handle when a peer leaves
+    room.onPeerLeave = (peerId) => {
+      console.log(`[Multiplayer] 🔌 Peer disconnesso: ${peerId}`);
+      const rp = networkState.remotePlayers.get(peerId);
+      showMultiplayerNotification(`🚪 ${rp?.name || 'Un giocatore'} è uscito.`);
+      removeRemotePlayer(peerId);
+      checkAndUpdateHostStatus();
+      updateMultiplayerHUD();
     };
+
+    checkAndUpdateHostStatus();
+    showMultiplayerNotification(`🎮 Stanza: "${currentRoomId}" attiva!`);
+    console.log(`[Multiplayer] ✅ Connesso con successo alla stanza "${currentRoomId}"!`);
+
   } catch (err) {
-    console.error('[Multiplayer] Impossibile avviare WebSocket:', err);
+    console.error('[Multiplayer] Errore connessione stanza Trystero:', err);
   }
 }
 
@@ -1791,12 +1894,11 @@ function punchAttack() {
   checkPunchHits();
 
   // Broadcast punch to other players
-  if (networkState.connected && networkState.ws && networkState.ws.readyState === 1) {
+  if (networkState.actionPunch) {
     try {
-      networkState.ws.send(JSON.stringify({
-        type: 'punch',
+      networkState.actionPunch.send({
         side: player.attackSide
-      }));
+      });
     } catch (e) {}
   }
 }
@@ -1846,18 +1948,17 @@ function damageZombie(z, damage, dirX, dirZ, isRemote = false) {
   spawnHitParticles(z.position.x, z.position.y + 1.25, z.position.z);
   updateZombieHealthBar(z);
 
-  // Broadcast cooperative zombie damage to server if local hit
-  if (!isRemote && networkState.connected && networkState.ws && networkState.ws.readyState === 1) {
+  // Broadcast cooperative zombie damage to peers if local hit
+  if (!isRemote && networkState.actionZombieHit) {
     const zIdx = zombies.indexOf(z);
     if (zIdx !== -1) {
       try {
-        networkState.ws.send(JSON.stringify({
-          type: 'zombie_hit',
+        networkState.actionZombieHit.send({
           zombieIndex: zIdx,
           damage: damage,
           dirX: Math.round(dirX * 100) / 100,
           dirZ: Math.round(dirZ * 100) / 100
-        }));
+        });
       } catch (e) {}
     }
   }
@@ -2047,11 +2148,10 @@ function shootGun() {
   const flashDir = finalHitPos.clone().sub(muzzlePos).normalize();
   triggerMuzzleFlash(muzzlePos, flashDir);
 
-  // Broadcast shot to other players
-  if (networkState.connected && networkState.ws && networkState.ws.readyState === 1) {
+  // Broadcast shot to other players in room
+  if (networkState.actionShoot) {
     try {
-      networkState.ws.send(JSON.stringify({
-        type: 'shoot',
+      networkState.actionShoot.send({
         from: {
           x: Math.round(muzzlePos.x * 100) / 100,
           y: Math.round(muzzlePos.y * 100) / 100,
@@ -2062,7 +2162,7 @@ function shootGun() {
           y: Math.round(finalHitPos.y * 100) / 100,
           z: Math.round(finalHitPos.z * 100) / 100
         }
-      }));
+      });
     } catch (e) {}
   }
 

@@ -29,15 +29,16 @@ Un gioco d'avventura 3D in terza e prima persona sviluppato con **Three.js**, **
   - Combattimento corpo a corpo: sferra pugni veloci e potenti (sinistro e destro alternati) con tasto `E` o pulsante touch `PUGNO 🥊`.
   - Reazioni d'impatto con particelle di sangue/scintille, knockback, flash di danno sui materiali e barre della salute sospese sopra la testa dei non-morti.
   - Effetti sonori completi Web Audio: fendente del pugno nell'aria, impatto del colpo sul bersaglio, grugnito di dolore e verso di morte degli zombie.
-- **Multiplayer Cooperativo 3D Real-Time (WebSockets)**:
-  - Architettura client-server basata su WebSockets integrata direttamente sulla singola porta `3000` (nessuna configurazione firewall o porte aggiuntive).
-  - Connessione simultanea tra più PC e smartphone/tablet sulla stessa rete locale (LAN / Wi-Fi) semplicemente aprendo `http://<IP-LOCALE>:3000/`.
-  - Assegnazione automatica di nomi identificativi e **8 colori esclusivi per le magliette** (Blu Classico, Rosso Cremisi, Verde Smeraldo, Arancione Sole, Viola Notte, Ciano Polare, Giallo Oro, Rosa Neon).
+- **Multiplayer Cooperativo 3D Real-Time Serverless (WebRTC & Trystero)**:
+  - **Compatibile al 100% con Vercel e Hosting Statico**: Nessun server backend persistente o VPS richiesto. I giocatori si connettono direttamente peer-to-peer (P2P) tramite WebRTC con matchmaking decentralizzato.
+  - **Stessa Stanza Automatica**: Tutti i giocatori che aprono il gioco su Vercel (o in locale) entrano automaticamente nella **stessa stanza globale** (`gamezombie-global`) senza dover inserire codici.
+  - **Stanze Private & Link d'Invito**: Possibilità di creare o cambiare stanza con un clic sul nome della stanza nell'HUD oppure condividere un link diretto con parametro `?room=nome-stanza` tramite il pulsante `📋 Invita`.
+  - **8 Colori di Maglietta Esclusivi**: Assegnazione automatica di colori vivaci per distinguere ogni giocatore in partita.
   - **Replicazione e Interpolazione Completa**: I compagni di squadra si muovono con cinematica inversa a 2 ossa (2-bone IK) alle gambe, saltano, corrono e orientano il busto e la visuale in tempo reale.
-  - **Sincronizzazione Balistica e Combattimento**: Quando un compagno spara o colpisce coi pugni, vedi i traccianti dorati, il muzzle flash, l'animazione di mira con la pistola nella mano destra o i fendenti di pugni, e ascolti gli spari posizionali 3D attenuati dalla distanza.
-  - **Co-op Zombie Fight**: I danni agli zombie sono cooperativi e sincronizzati; entrambi i giocatori possono combattere e abbattere insieme la stessa orda di zombie con effetti visivi, knockback e ragdoll fisici condivisi.
-  - **Nametag 3D & Healthbar**: Ogni giocatore mostra sopra la testa il proprio nome e la barra della salute colorata in base allo stato vitale.
-  - **HUD Multiplayer**: Scheda in alto a destra con stato online, conteggio giocatori, lista partecipanti e notifiche di ingresso/uscita a comparsa.
+  - **Sincronizzazione Balistica e Combattimento**: Traccianti dorati dei proiettili, muzzle flash, animazione di mira con pistola nella mano destra, pugni e audio posizionale 3D sincronizzati istantaneamente tra tutti i peer.
+  - **Co-op Zombie Fight & Host Migration**: I danni agli zombie sono cooperativi e sincronizzati. Se il giocatore host esce, un altro peer viene automaticamente promosso a host senza interrompere la partita.
+  - **Nametag 3D & Healthbar**: Ogni giocatore mostra sopra la testa il proprio nome e la barra della salute colorata in tempo reale.
+  - **HUD Multiplayer**: Scheda in alto a destra con stato online, nome stanza, conteggio partecipanti e lista giocatori con relativi HP.
 - **Doppia Visuale**: Alterna tra 3ª persona (orbital camera) e 1ª persona (vista occhi) con il tasto `V`.
 - **Controlli Completi per Smartphone & Tablet**:
   - Joystick analogico virtuale a 360°.

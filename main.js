@@ -425,8 +425,12 @@ const gemMat = new THREE.MeshStandardMaterial({
 });
 
 for (let i = 0; i < totalGems; i++) {
-  const ang = (i / totalGems) * Math.PI * 2 + Math.random() * 0.3;
-  const dist = 18 + Math.random() * 50;
+  // Deterministic placement so every connected player sees gems at identical world coordinates
+  const seed = (i * 9301 + 49297) % 233280;
+  const rnd1 = seed / 233280;
+  const rnd2 = ((seed * 9301 + 49297) % 233280) / 233280;
+  const ang = (i / totalGems) * Math.PI * 2 + rnd1 * 0.35;
+  const dist = 18 + rnd2 * 45;
   const gx = Math.cos(ang) * dist;
   const gz = Math.sin(ang) * dist;
   const gy = getTerrainHeight(gx, gz) + 1.2;
@@ -434,7 +438,7 @@ for (let i = 0; i < totalGems; i++) {
   const gem = new THREE.Mesh(gemGeo, gemMat.clone());
   gem.position.set(gx, gy, gz);
   gem.castShadow = true;
-  gem.userData = { baseY: gy, collected: false, offset: Math.random() * Math.PI };
+  gem.userData = { id: i, baseY: gy, collected: false, offset: rnd1 * Math.PI };
   scene.add(gem);
   gems.push(gem);
 }
@@ -563,8 +567,8 @@ loader.load('/character.glb', (gltf) => {
 // =========================================================================
 // --- MULTIPLAYER CO-OP SERVERLESS P2P (WebRTC & Trystero for Vercel) ---
 // =========================================================================
-const urlParams = new URLSearchParams(window.location.search);
-const currentRoomId = (urlParams.get('room') || 'gamezombie-global').trim().toLowerCase();
+// Single authoritative global server room: all players connect here automatically
+const GLOBAL_SERVER_ROOM = 'gamezombie-global-server';
 
 const PLAYER_COLORS = [
   { name: 'Blu Classico', hex: '#1f8cd9', num: 0x1f8cd9 },
@@ -596,7 +600,9 @@ const networkState = {
   actionPunch: null,
   actionZombieHit: null,
   actionHandshake: null,
-  actionZombiesSync: null
+  actionZombiesSync: null,
+  actionCheckpoint: null,
+  actionGemCollected: null
 };
 
 // 1. Nametag 2D Sprite Billboarding
@@ -860,15 +866,24 @@ function updateMultiplayerHUD() {
   const statusBadge = document.getElementById('mp-status-badge');
   const statusDot = document.getElementById('mp-status-dot');
   const statusText = document.getElementById('mp-status-text');
-  const roomNameElem = document.getElementById('mp-room-name');
-
-  if (roomNameElem) {
-    roomNameElem.innerText = currentRoomId;
-  }
+  const roleBadge = document.getElementById('mp-role-badge');
 
   const total = 1 + networkState.remotePlayers.size;
   if (countElem) {
     countElem.innerText = total === 1 ? '1 Giocatore' : `${total} Giocatori`;
+  }
+  if (roleBadge) {
+    if (networkState.isHost) {
+      roleBadge.innerText = '👑 SERVER (Host)';
+      roleBadge.style.color = '#ffd166';
+      roleBadge.style.borderColor = '#ffd166';
+      roleBadge.style.background = 'rgba(255, 209, 102, 0.22)';
+    } else {
+      roleBadge.innerText = '👤 CLIENT';
+      roleBadge.style.color = '#38bdf8';
+      roleBadge.style.borderColor = '#38bdf8';
+      roleBadge.style.background = 'rgba(56, 189, 248, 0.18)';
+    }
   }
   if (myNameElem) {
     myNameElem.innerText = networkState.myName + (networkState.isHost ? ' (Host)' : '');
@@ -903,34 +918,6 @@ function updateMultiplayerHUD() {
       listElem.appendChild(row);
     });
   }
-}
-
-// Event Listeners per Invito e Cambio Stanza
-const copyInviteBtn = document.getElementById('mp-copy-link-btn');
-if (copyInviteBtn) {
-  copyInviteBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const url = new URL(window.location.href);
-    url.searchParams.set('room', currentRoomId);
-    navigator.clipboard.writeText(url.toString()).then(() => {
-      showMultiplayerNotification('🔗 Link d\'invito copiato negli appunti!');
-    }).catch(() => {
-      prompt('Copia questo link per giocare insieme nella stanza:', url.toString());
-    });
-  });
-}
-
-const roomNameClickable = document.getElementById('mp-room-name');
-if (roomNameClickable) {
-  roomNameClickable.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const newRoom = prompt('Inserisci il nome della stanza a cui collegarti:', currentRoomId);
-    if (newRoom && newRoom.trim() && newRoom.trim().toLowerCase() !== currentRoomId) {
-      const url = new URL(window.location.href);
-      url.searchParams.set('room', newRoom.trim().toLowerCase());
-      window.location.href = url.toString();
-    }
-  });
 }
 
 // 7. Update Remote Players Loop (called every frame in animate)
@@ -1143,23 +1130,192 @@ function updateRemotePlayers(dt) {
   });
 }
 
-// 8. Host Election & Migration Helper
+// 8. Host Election & Dynamic Migration Helper
 function checkAndUpdateHostStatus() {
   if (!networkState.room) {
     networkState.isHost = true;
+    updateMultiplayerHUD();
     return;
   }
   const peerIds = Object.keys(networkState.room.getPeers());
   const allIds = [selfId, ...peerIds].sort();
   const wasHost = networkState.isHost;
-  networkState.isHost = allIds[0] === selfId;
+  networkState.isHost = (allIds[0] === selfId);
+
   if (networkState.isHost !== wasHost) {
-    console.log(`[Multiplayer] Ruolo aggiornato: ${networkState.isHost ? '👑 HOST' : '👤 CLIENT'}`);
+    if (networkState.isHost) {
+      console.log('[Multiplayer] 👑 Sei ora il SERVER (Host) della stanza!');
+      showMultiplayerNotification('👑 Sei il nuovo Server/Host della partita!');
+      playBeep(740, 0.25, 'triangle');
+      saveCheckpoint('host_migration');
+    } else {
+      console.log('[Multiplayer] 👤 Connesso come CLIENT');
+    }
     updateMultiplayerHUD();
   }
 }
 
-// 9. Send Local Player Update to Room Peers (~25Hz)
+// 9. Checkpoint System: Persistent game progress across sessions & player joins/leaves
+async function saveCheckpoint(reason = 'manual', targetPeerId = null) {
+  const checkpointData = {
+    version: 1,
+    savedAt: Date.now(),
+    hostId: selfId,
+    reason,
+    zombiesDefeated,
+    gemsCollected,
+    collectedGems: gems.filter(g => g.userData.collected).map(g => g.userData.id),
+    zombies: zombies.map(z => ({
+      hp: Math.round(z.hp),
+      isDead: !!z.isDead,
+      x: Math.round(z.position.x * 100) / 100,
+      y: Math.round(z.position.y * 100) / 100,
+      z: Math.round(z.position.z * 100) / 100
+    }))
+  };
+
+  const payloadStr = JSON.stringify(checkpointData);
+
+  // 1. Instant local persistence
+  try {
+    localStorage.setItem('gamezombie_checkpoint', payloadStr);
+  } catch (e) {}
+
+  // 2. Server persistence on Vercel /api/checkpoint
+  if (reason === 'host_exit') {
+    try {
+      if (navigator.sendBeacon) {
+        const blob = new Blob([payloadStr], { type: 'application/json' });
+        navigator.sendBeacon('/api/checkpoint', blob);
+      } else {
+        fetch('/api/checkpoint', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payloadStr,
+          keepalive: true
+        }).catch(() => {});
+      }
+    } catch (e) {}
+  } else {
+    fetch('/api/checkpoint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payloadStr
+    }).then(res => res.json()).then(data => {
+      console.log('[Checkpoint] Salvato sul server:', data);
+    }).catch(err => {
+      console.warn('[Checkpoint] Serverless sync avviso:', err);
+    });
+  }
+
+  // 3. Update HUD timestamp
+  const timeElem = document.getElementById('mp-checkpoint-time');
+  if (timeElem) {
+    const d = new Date();
+    timeElem.innerText = d.toLocaleTimeString();
+  }
+
+  // 4. Send checkpoint snapshot to peer(s)
+  if (networkState.actionCheckpoint) {
+    try {
+      if (targetPeerId) {
+        networkState.actionCheckpoint.send(checkpointData, { target: targetPeerId });
+      } else {
+        networkState.actionCheckpoint.send(checkpointData);
+      }
+    } catch (e) {}
+  }
+}
+
+function applyCheckpoint(data) {
+  if (!data || typeof data !== 'object') return;
+  console.log('[Checkpoint] Applicazione dati checkpoint:', data);
+
+  // Sync collected gems
+  if (Array.isArray(data.collectedGems)) {
+    data.collectedGems.forEach(id => {
+      const gem = gems.find(g => g.userData.id === id);
+      if (gem && !gem.userData.collected) {
+        gem.userData.collected = true;
+        scene.remove(gem);
+      }
+    });
+  }
+  if (data.gemsCollected !== undefined) {
+    gemsCollected = Math.max(gemsCollected, data.gemsCollected);
+    const gemCountElem = document.getElementById('gems-count');
+    if (gemCountElem) gemCountElem.innerText = gemsCollected;
+  }
+
+  // Sync defeated & alive zombies
+  if (Array.isArray(data.zombies) && zombies.length > 0) {
+    data.zombies.forEach((zd, idx) => {
+      const z = zombies[idx];
+      if (z) {
+        if (zd.hp !== undefined) {
+          z.hp = zd.hp;
+          updateZombieHealthBar(z);
+        }
+        if (zd.isDead && !z.isDead) {
+          z.isDead = true;
+          z.hp = 0;
+          if (z.healthBar && z.healthBar.barGroup) {
+            scene.remove(z.healthBar.barGroup);
+          }
+          if (z.group) {
+            z.group.position.set(zd.x || z.position.x, zd.y || z.position.y, zd.z || z.position.z);
+            z.group.rotation.x = -Math.PI / 2; // Flat on ground (ragdoll pose)
+          }
+        }
+      }
+    });
+  }
+  if (data.zombiesDefeated !== undefined) {
+    zombiesDefeated = Math.max(zombiesDefeated, data.zombiesDefeated);
+    const countElem = document.getElementById('zombies-count');
+    if (countElem) countElem.innerText = zombiesDefeated;
+  }
+
+  // Update HUD timestamp
+  const timeElem = document.getElementById('mp-checkpoint-time');
+  if (timeElem && data.savedAt) {
+    const d = new Date(data.savedAt);
+    timeElem.innerText = d.toLocaleTimeString();
+  }
+}
+
+async function loadInitialCheckpoint() {
+  let loaded = false;
+  try {
+    const res = await fetch('/api/checkpoint');
+    if (res.ok) {
+      const data = await res.json();
+      if (data && (data.zombiesDefeated > 0 || data.gemsCollected > 0 || (Array.isArray(data.zombies) && data.zombies.length > 0))) {
+        applyCheckpoint(data);
+        loaded = true;
+        console.log('[Checkpoint] Ripristinato stato da /api/checkpoint!');
+        showMultiplayerNotification('💾 Progresso salvato caricato dal server!');
+      }
+    }
+  } catch (e) {
+    console.log('[Checkpoint] GET /api/checkpoint offline, controllo localStorage');
+  }
+
+  if (!loaded) {
+    try {
+      const local = localStorage.getItem('gamezombie_checkpoint');
+      if (local) {
+        const data = JSON.parse(local);
+        if (data && (data.zombiesDefeated > 0 || data.gemsCollected > 0)) {
+          applyCheckpoint(data);
+          console.log('[Checkpoint] Ripristinato stato da localStorage!');
+        }
+      }
+    } catch (e) {}
+  }
+}
+
+// 10. Send Local Player Update to Room Peers (~25Hz)
 function networkSendUpdate(dt) {
   if (!networkState.actionState) return;
   networkState.lastSendTime += dt;
@@ -1212,9 +1368,9 @@ function networkSendUpdate(dt) {
   }
 }
 
-// 10. Initialize Serverless WebRTC Room Connection (Works on Vercel & Web)
+// 11. Initialize Serverless WebRTC Room Connection (Works on Vercel & Web)
 function initMultiplayer() {
-  console.log(`[Multiplayer] Connessione P2P WebRTC alla stanza "${currentRoomId}"...`);
+  console.log(`[Multiplayer] Connessione P2P WebRTC alla stanza globale "${GLOBAL_SERVER_ROOM}"...`);
   networkState.myId = selfId;
 
   // Deterministic color assignment based on selfId
@@ -1232,10 +1388,25 @@ function initMultiplayer() {
     applyColorToModelShirt(player.model, networkState.myColor.num);
   }
 
+  // Load any previously saved checkpoint from server / local storage
+  loadInitialCheckpoint();
+
+  // Save checkpoint on exit if host
+  window.addEventListener('beforeunload', () => {
+    if (networkState.isHost) {
+      saveCheckpoint('host_exit');
+    }
+  });
+  window.addEventListener('pagehide', () => {
+    if (networkState.isHost) {
+      saveCheckpoint('host_exit');
+    }
+  });
+
   try {
     const room = joinRoom({
       appId: 'not-exist-gamezombie-v1'
-    }, currentRoomId);
+    }, GLOBAL_SERVER_ROOM);
     networkState.room = room;
     networkState.connected = true;
     updateMultiplayerHUD();
@@ -1360,10 +1531,34 @@ function initMultiplayer() {
       }
     };
 
+    // 7. Checkpoint Action (Host broadcasts saved checkpoint to clients)
+    const actionCheckpoint = room.makeAction('checkpoint');
+    networkState.actionCheckpoint = actionCheckpoint;
+    actionCheckpoint.onMessage = (checkpointData, { peerId }) => {
+      console.log(`[Multiplayer] Checkpoint ricevuto dall'host ${peerId}`);
+      applyCheckpoint(checkpointData);
+      showMultiplayerNotification('💾 Checkpoint sincronizzato dall\'Host!');
+    };
+
+    // 8. Gem Collected Action (Co-op real-time gem sync)
+    const actionGemCollected = room.makeAction('gem_collected');
+    networkState.actionGemCollected = actionGemCollected;
+    actionGemCollected.onMessage = (data, { peerId }) => {
+      const gem = gems.find(g => g.userData.id === data.gemIndex);
+      if (gem && !gem.userData.collected) {
+        gem.userData.collected = true;
+        scene.remove(gem);
+        gemsCollected++;
+        const gemCountElem = document.getElementById('gems-count');
+        if (gemCountElem) gemCountElem.innerText = gemsCollected;
+        playBeep(880, 0.18, 'sine');
+      }
+    };
+
     // Handle when a peer connects to our room
     room.onPeerJoin = (peerId) => {
       console.log(`[Multiplayer] 🎮 Peer connesso: ${peerId}`);
-      showMultiplayerNotification(`👋 Giocatore collegato alla stanza!`);
+      showMultiplayerNotification(`👋 Nuovo giocatore collegato! Checkpoint salvato.`);
       playBeep(580, 0.15, 'triangle');
 
       // Send our handshake to the new peer so they know our name, color and HP
@@ -1377,17 +1572,22 @@ function initMultiplayer() {
 
       checkAndUpdateHostStatus();
 
-      // If we are host, send current zombie states to the new peer
-      if (networkState.isHost && networkState.actionZombiesSync && zombies.length > 0) {
-        const zData = zombies.map(z => ({
-          x: Math.round(z.position.x * 100) / 100,
-          y: Math.round(z.position.y * 100) / 100,
-          z: Math.round(z.position.z * 100) / 100,
-          fA: Math.round(z.facingAngle * 100) / 100,
-          hp: Math.round(z.hp),
-          dead: z.isDead
-        }));
-        networkState.actionZombiesSync.send({ zombies: zData }, { target: peerId });
+      // If we are host, take and save a checkpoint on server, and send snapshot to new player
+      if (networkState.isHost) {
+        saveCheckpoint('player_join', peerId);
+
+        // Send current zombie states to the new peer
+        if (networkState.actionZombiesSync && zombies.length > 0) {
+          const zData = zombies.map(z => ({
+            x: Math.round(z.position.x * 100) / 100,
+            y: Math.round(z.position.y * 100) / 100,
+            z: Math.round(z.position.z * 100) / 100,
+            fA: Math.round(z.facingAngle * 100) / 100,
+            hp: Math.round(z.hp),
+            dead: z.isDead
+          }));
+          networkState.actionZombiesSync.send({ zombies: zData }, { target: peerId });
+        }
       }
 
       updateMultiplayerHUD();
@@ -1404,8 +1604,8 @@ function initMultiplayer() {
     };
 
     checkAndUpdateHostStatus();
-    showMultiplayerNotification(`🎮 Stanza: "${currentRoomId}" attiva!`);
-    console.log(`[Multiplayer] ✅ Connesso con successo alla stanza "${currentRoomId}"!`);
+    showMultiplayerNotification(`🎮 Connesso al server globale!`);
+    console.log(`[Multiplayer] ✅ Connesso con successo alla stanza globale "${GLOBAL_SERVER_ROOM}"!`);
 
   } catch (err) {
     console.error('[Multiplayer] Errore connessione stanza Trystero:', err);
@@ -1804,8 +2004,12 @@ function spawnZombies() {
   if (!zombieTemplate) return;
 
   for (let i = 0; i < totalZombies; i++) {
-    const ang = (i / totalZombies) * Math.PI * 2 + (Math.random() * 0.4 - 0.2);
-    const dist = 24 + Math.random() * 42;
+    // Deterministic zombie placement so every player shares identical initial positions
+    const seed = (i * 9973 + 37199) % 65536;
+    const rnd1 = (seed / 65536) * 0.4 - 0.2;
+    const rnd2 = (((seed * 25173 + 13849) % 65536) / 65536);
+    const ang = (i / totalZombies) * Math.PI * 2 + rnd1;
+    const dist = 24 + rnd2 * 42;
     const zx = Math.cos(ang) * dist;
     const zz = Math.sin(ang) * dist;
     const zy = getTerrainHeight(zx, zz);
@@ -1998,6 +2202,11 @@ function damageZombie(z, damage, dirX, dirZ, isRemote = false) {
     const countElem = document.getElementById('zombies-count');
     if (countElem) countElem.innerText = zombiesDefeated;
     playZombieDeath();
+
+    // If host, save checkpoint upon defeating a zombie
+    if (networkState.isHost) {
+      saveCheckpoint('zombie_defeat');
+    }
   }
 }
 
@@ -3891,6 +4100,18 @@ function updateGems(dt) {
       gemsCollected++;
       gemCountElem.innerText = gemsCollected;
       playBeep(880, 0.18, 'sine');
+
+      // Real-time broadcast of gem collected across peers
+      if (networkState.actionGemCollected) {
+        try {
+          networkState.actionGemCollected.send({ gemIndex: gem.userData.id });
+        } catch (e) {}
+      }
+
+      // If host, save checkpoint upon collecting a gem
+      if (networkState.isHost) {
+        saveCheckpoint('gem_collected');
+      }
     }
   });
 }

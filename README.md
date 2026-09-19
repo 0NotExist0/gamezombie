@@ -29,16 +29,18 @@ Un gioco d'avventura 3D in terza e prima persona sviluppato con **Three.js**, **
   - Combattimento corpo a corpo: sferra pugni veloci e potenti (sinistro e destro alternati) con tasto `E` o pulsante touch `PUGNO 🥊`.
   - Reazioni d'impatto con particelle di sangue/scintille, knockback, flash di danno sui materiali e barre della salute sospese sopra la testa dei non-morti.
   - Effetti sonori completi Web Audio: fendente del pugno nell'aria, impatto del colpo sul bersaglio, grugnito di dolore e verso di morte degli zombie.
-- **Multiplayer Cooperativo 3D Real-Time Serverless (WebRTC & Trystero)**:
-  - **Compatibile al 100% con Vercel e Hosting Statico**: Nessun server backend persistente o VPS richiesto. I giocatori si connettono direttamente peer-to-peer (P2P) tramite WebRTC con matchmaking decentralizzato.
-  - **Stessa Stanza Automatica**: Tutti i giocatori che aprono il gioco su Vercel (o in locale) entrano automaticamente nella **stessa stanza globale** (`gamezombie-global`) senza dover inserire codici.
-  - **Stanze Private & Link d'Invito**: Possibilità di creare o cambiare stanza con un clic sul nome della stanza nell'HUD oppure condividere un link diretto con parametro `?room=nome-stanza` tramite il pulsante `📋 Invita`.
+- **Multiplayer Cooperativo 3D Real-Time Serverless (WebRTC & Vercel API)**:
+  - **Stanza Globale Unica Automatica**: Nessun link d'invito o codice stanza necessario. Tutti i giocatori che aprono il gioco (su Vercel o in locale) si uniscono automaticamente alla **stessa stanza globale** (`gamezombie-global-server`).
+  - **Architettura Host/Server con Migrazione Automatica**: Il primo giocatore che apre il gioco fa da **Server/Host** autorevole (gestione IA zombie, posizioni e checkpoint). Se l'Host chiude la scheda o si disconnette, il sistema elegge istantaneamente il giocatore successivo come nuovo Host (`👑 HOST (Server)`), garantendo continuità assoluta senza interruzioni.
+  - **Sistema Checkpoint Persistente su Vercel Serverless**:
+    - **Al Join di ogni giocatore**: Ogni volta che un nuovo giocatore entra nella partita, l'Host genera un checkpoint completo (zombie sconfitti, stati dei nemici in vita, gemme raccolte, timestamp) e lo salva su `/api/checkpoint` e in `localStorage`, sincronizzandolo istantaneamente al nuovo arrivato via P2P.
+    - **Alla Chiusura dell'Host**: Quando l'Host chiude la pagina o naviga altrove, viene inviato automaticamente un checkpoint di salvataggio al server tramite `navigator.sendBeacon` e salvato in locale.
+    - **All'Avvio del Gioco**: All'apertura iniziale, il gioco interroga `/api/checkpoint` e ripristina i progressi mondiali.
   - **8 Colori di Maglietta Esclusivi**: Assegnazione automatica di colori vivaci per distinguere ogni giocatore in partita.
   - **Replicazione e Interpolazione Completa**: I compagni di squadra si muovono con cinematica inversa a 2 ossa (2-bone IK) alle gambe, saltano, corrono e orientano il busto e la visuale in tempo reale.
-  - **Sincronizzazione Balistica e Combattimento**: Traccianti dorati dei proiettili, muzzle flash, animazione di mira con pistola nella mano destra, pugni e audio posizionale 3D sincronizzati istantaneamente tra tutti i peer.
-  - **Co-op Zombie Fight & Host Migration**: I danni agli zombie sono cooperativi e sincronizzati. Se il giocatore host esce, un altro peer viene automaticamente promosso a host senza interrompere la partita.
+  - **Sincronizzazione Balistica, Combattimento e Gemme**: Traccianti dorati dei proiettili, muzzle flash, animazione di mira con pistola nella mano destra, pugni, raccolta gemme e audio posizionale 3D sincronizzati istantaneamente tra tutti i peer.
   - **Nametag 3D & Healthbar**: Ogni giocatore mostra sopra la testa il proprio nome e la barra della salute colorata in tempo reale.
-  - **HUD Multiplayer**: Scheda in alto a destra con stato online, nome stanza, conteggio partecipanti e lista giocatori con relativi HP.
+  - **HUD Multiplayer**: Scheda in alto a destra con badge di stato, indicatore di ruolo (`👑 SERVER (Host)` / `👤 CLIENT`), timestamp dell'ultimo checkpoint salvato e lista partecipanti.
 - **Doppia Visuale**: Alterna tra 3ª persona (orbital camera) e 1ª persona (vista occhi) con il tasto `V`.
 - **Controlli Completi per Smartphone & Tablet**:
   - Joystick analogico virtuale a 360°.

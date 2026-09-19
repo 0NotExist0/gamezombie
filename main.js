@@ -161,9 +161,10 @@ function playZombieBreakOff() {
 }
 
 // --- Weapon & Gunfire Sound Effects ---
-function playGunshot() {
+function playGunshot(volumeScale = 1.0) {
   if (audioCtx.state === 'suspended') audioCtx.resume();
   const t = audioCtx.currentTime;
+  const vol = Math.max(0.01, Math.min(1.5, volumeScale));
 
   // 1. Low transient bass punch
   const osc = audioCtx.createOscillator();
@@ -171,7 +172,7 @@ function playGunshot() {
   osc.type = 'triangle';
   osc.frequency.setValueAtTime(280, t);
   osc.frequency.exponentialRampToValueAtTime(36, t + 0.22);
-  oscGain.gain.setValueAtTime(0.65, t);
+  oscGain.gain.setValueAtTime(0.65 * vol, t);
   oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
   osc.connect(oscGain);
   oscGain.connect(audioCtx.destination);
@@ -195,7 +196,7 @@ function playGunshot() {
   filter.Q.setValueAtTime(1.1, t);
 
   const noiseGain = audioCtx.createGain();
-  noiseGain.gain.setValueAtTime(0.75, t);
+  noiseGain.gain.setValueAtTime(0.75 * vol, t);
   noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
 
   noise.connect(filter);
@@ -507,9 +508,11 @@ const player = {
 scene.add(player.group);
 
 // Load Character GLB
+let characterTemplate = null;
 const loader = new GLTFLoader();
 loader.load('/character.glb', (gltf) => {
   player.model = gltf.scene;
+  characterTemplate = gltf.scene;
 
   player.model.traverse((child) => {
     if (child.isMesh) {
@@ -539,10 +542,772 @@ loader.load('/character.glb', (gltf) => {
 
   player.group.add(player.model);
   attachPistolToHand();
+
+  // If local player was already assigned color by server, tint shirt
+  if (networkState.myColor && networkState.myColor.num !== undefined) {
+    applyColorToModelShirt(player.model, networkState.myColor.num);
+  }
+
+  // Flush any pending remote players who joined before character GLB loaded
+  while (networkState.pendingPlayers.length > 0) {
+    const pData = networkState.pendingPlayers.shift();
+    createRemotePlayer(pData);
+  }
+
   console.log('🎮 Low-Poly Adventure — Not Exist Game Productions');
   console.log('👤 Developed by: 0Not_Exist0');
   console.log('🦴 Character and IK bones loaded successfully:', Object.keys(player.bones));
 });
+
+// =========================================================================
+// --- MULTIPLAYER CO-OP REAL-TIME NETWORKING SYSTEM (WebSockets) ---
+// =========================================================================
+const networkState = {
+  ws: null,
+  connected: false,
+  myId: null,
+  myName: 'Giocatore',
+  myColor: { name: 'Blu Classico', hex: '#1f8cd9', num: 0x1f8cd9 },
+  isHost: false,
+  totalPlayers: 1,
+  lastSendTime: 0,
+  sendInterval: 0.040, // 25Hz state broadcast
+  zombieSyncTime: 0,
+  remotePlayers: new Map(), // id -> remotePlayerData
+  pendingPlayers: []
+};
+
+// 1. Nametag 2D Sprite Billboarding
+function createPlayerNametag(name, colorHex) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 72;
+  const ctx = canvas.getContext('2d');
+
+  function redraw(hp = 100) {
+    ctx.clearRect(0, 0, 256, 72);
+    // Outer rounded card
+    ctx.fillStyle = 'rgba(10, 15, 25, 0.85)';
+    ctx.beginPath();
+    ctx.roundRect(10, 6, 236, 60, 14);
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = colorHex;
+    ctx.stroke();
+
+    // Name text
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(name, 128, 26);
+
+    // Health bar track
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+    ctx.beginPath();
+    ctx.roundRect(26, 44, 204, 12, 6);
+    ctx.fill();
+
+    // Health bar fill
+    const healthPercent = Math.max(0, Math.min(1, hp / 100));
+    if (healthPercent > 0) {
+      ctx.fillStyle = healthPercent > 0.5 ? '#06d6a0' : (healthPercent > 0.25 ? '#ffd166' : '#ff595e');
+      ctx.beginPath();
+      ctx.roundRect(26, 44, 204 * healthPercent, 12, 6);
+      ctx.fill();
+    }
+  }
+
+  redraw(100);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(spriteMat);
+  sprite.scale.set(1.6, 0.45, 1.0);
+  sprite.position.set(0, 2.35, 0);
+  sprite.renderOrder = 999;
+
+  return {
+    sprite,
+    redraw: (hp) => {
+      redraw(hp);
+      texture.needsUpdate = true;
+    },
+    texture
+  };
+}
+
+// 2. Custom Shirt Recolor Helper
+function applyColorToModelShirt(model, colorNum) {
+  const shirtMat = new THREE.MeshStandardMaterial({
+    color: colorNum,
+    roughness: 0.75,
+    metalness: 0.05,
+    flatShading: true
+  });
+  model.traverse((child) => {
+    if (child.isMesh) {
+      const name = child.name || '';
+      if (name.includes('Torso') || name.includes('ForeArm') || name.includes('UpperArm') || (child.material && child.material.name && child.material.name.toLowerCase().includes('shirt'))) {
+        child.material = shirtMat;
+      }
+    }
+  });
+}
+
+// 3. Create Remote Player
+function createRemotePlayer(playerData) {
+  if (networkState.remotePlayers.has(playerData.id)) return;
+  if (!characterTemplate) {
+    networkState.pendingPlayers.push(playerData);
+    return;
+  }
+
+  const group = new THREE.Group();
+  group.position.set(playerData.x || 0, playerData.y || 0, playerData.z || 0);
+  group.rotation.y = playerData.facingAngle || 0;
+
+  const model = characterTemplate.clone(true);
+  const bones = {};
+  const restRotations = {};
+  const restPositions = {};
+
+  const playerColorNum = (playerData.color && playerData.color.num !== undefined) ? playerData.color.num : 0x1f8cd9;
+  const playerColorHex = (playerData.color && playerData.color.hex) ? playerData.color.hex : '#1f8cd9';
+
+  const customShirtMat = new THREE.MeshStandardMaterial({
+    color: playerColorNum,
+    roughness: 0.75,
+    metalness: 0.05,
+    flatShading: true
+  });
+
+  model.traverse((child) => {
+    if (child.isMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+      if (child.material) {
+        child.material = child.material.clone();
+        child.material.flatShading = true;
+      }
+      const name = child.name || '';
+      if (name.includes('Torso') || name.includes('ForeArm') || name.includes('UpperArm') || (child.material && child.material.name && child.material.name.toLowerCase().includes('shirt'))) {
+        child.material = customShirtMat;
+      }
+    }
+    if (child.name) {
+      const name = child.name;
+      const stripped = name.replace(/\./g, '');
+      bones[name] = child;
+      bones[stripped] = child;
+      restRotations[name] = child.rotation.clone();
+      restRotations[stripped] = child.rotation.clone();
+      restPositions[name] = child.position.clone();
+      restPositions[stripped] = child.position.clone();
+    }
+  });
+
+  group.add(model);
+
+  // Attach 3D Pistol to Hand_R if pistol model ready
+  let remotePistol = null;
+  const handR = bones['Hand_R'] || bones['hand.R'] || bones['handR'];
+  if (pistolState.model && handR) {
+    remotePistol = pistolState.model.clone();
+    remotePistol.traverse((c) => {
+      if (c.isMesh && c.material) {
+        c.material = c.material.clone();
+        c.material.flatShading = true;
+      }
+    });
+    handR.add(remotePistol);
+    remotePistol.position.set(0, -0.012, 0.025);
+    remotePistol.rotation.set(0, Math.PI, 0);
+    remotePistol.scale.set(0.92, 0.92, 0.92);
+  }
+
+  // 2D Nametag Sprite above head
+  const nametag = createPlayerNametag(playerData.name || 'Giocatore', playerColorHex);
+  group.add(nametag.sprite);
+
+  scene.add(group);
+
+  const remotePlayer = {
+    id: playerData.id,
+    name: playerData.name || 'Giocatore',
+    color: playerData.color,
+    group,
+    model,
+    bones,
+    restRotations,
+    restPositions,
+    pistol: remotePistol,
+    nametag,
+    currentPos: group.position.clone(),
+    targetPos: group.position.clone(),
+    currentYaw: playerData.facingAngle || 0,
+    targetYaw: playerData.facingAngle || 0,
+    pitch: 0,
+    isMoving: false,
+    isSprinting: false,
+    isGrounded: true,
+    walkCycle: 0,
+    isAiming: false,
+    isAttacking: false,
+    attackTimer: 0,
+    attackSide: 0,
+    hp: playerData.hp || 100,
+    lastHp: playerData.hp || 100
+  };
+
+  networkState.remotePlayers.set(playerData.id, remotePlayer);
+  updateMultiplayerHUD();
+  return remotePlayer;
+}
+
+// 4. Remove Remote Player
+function removeRemotePlayer(id) {
+  const rp = networkState.remotePlayers.get(id);
+  if (!rp) return;
+  scene.remove(rp.group);
+  if (rp.nametag && rp.nametag.texture) {
+    rp.nametag.texture.dispose();
+  }
+  networkState.remotePlayers.delete(id);
+  updateMultiplayerHUD();
+}
+
+// 5. Attach Pistol to Remote Player
+function attachPistolToRemotePlayer(rp) {
+  if (!pistolState.model || rp.pistol) return;
+  const handR = rp.bones['Hand_R'] || rp.bones['hand.R'] || rp.bones['handR'];
+  if (!handR) return;
+
+  const gun = pistolState.model.clone();
+  gun.traverse((c) => {
+    if (c.isMesh && c.material) {
+      c.material = c.material.clone();
+      c.material.flatShading = true;
+    }
+  });
+  handR.add(gun);
+  gun.position.set(0, -0.012, 0.025);
+  gun.rotation.set(0, Math.PI, 0);
+  gun.scale.set(0.92, 0.92, 0.92);
+  rp.pistol = gun;
+}
+
+// 6. UI HUD Card & Notification Updates
+function showMultiplayerNotification(msg) {
+  const container = document.getElementById('mp-notifications');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.style.background = 'rgba(15, 23, 42, 0.92)';
+  toast.style.border = '1px solid rgba(255, 209, 102, 0.6)';
+  toast.style.color = '#ffd166';
+  toast.style.fontSize = '13px';
+  toast.style.fontWeight = '700';
+  toast.style.padding = '8px 18px';
+  toast.style.borderRadius = '20px';
+  toast.style.boxShadow = '0 6px 20px rgba(0,0,0,0.4)';
+  toast.style.opacity = '0';
+  toast.style.transform = 'translateY(-10px)';
+  toast.style.transition = 'all 0.25s ease';
+  toast.innerText = msg;
+  container.appendChild(toast);
+
+  requestAnimationFrame(() => {
+    toast.style.opacity = '1';
+    toast.style.transform = 'translateY(0)';
+  });
+
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateY(-10px)';
+    setTimeout(() => {
+      toast.remove();
+    }, 260);
+  }, 3200);
+}
+
+function updateMultiplayerHUD() {
+  const countElem = document.getElementById('mp-player-count');
+  const listElem = document.getElementById('mp-players-list');
+  const myNameElem = document.getElementById('mp-my-name');
+  const myColorDot = document.getElementById('mp-color-dot');
+  const statusBadge = document.getElementById('mp-status-badge');
+  const statusDot = document.getElementById('mp-status-dot');
+  const statusText = document.getElementById('mp-status-text');
+
+  const total = 1 + networkState.remotePlayers.size;
+  if (countElem) {
+    countElem.innerText = total === 1 ? '1 Giocatore' : `${total} Giocatori`;
+  }
+  if (myNameElem) {
+    myNameElem.innerText = networkState.myName + (networkState.isHost ? ' (Host)' : '');
+    myNameElem.style.color = networkState.myColor.hex || '#1f8cd9';
+  }
+  if (myColorDot) {
+    myColorDot.style.background = networkState.myColor.hex || '#1f8cd9';
+  }
+  if (statusBadge && statusDot && statusText) {
+    if (networkState.connected) {
+      statusBadge.style.borderColor = '#06d6a0';
+      statusBadge.style.color = '#06d6a0';
+      statusDot.style.background = '#06d6a0';
+      statusText.innerText = 'ONLINE';
+    } else {
+      statusBadge.style.borderColor = '#ff595e';
+      statusBadge.style.color = '#ff595e';
+      statusDot.style.background = '#ff595e';
+      statusText.innerText = 'OFFLINE';
+    }
+  }
+
+  if (listElem) {
+    listElem.innerHTML = '';
+    networkState.remotePlayers.forEach((rp) => {
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.gap = '6px';
+      const colorHex = rp.color?.hex || '#1f8cd9';
+      row.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${colorHex};display:inline-block;"></span><span style="font-weight:600;color:#e2e8f0;">${rp.name}</span><span style="color:#64748b;font-size:10px;margin-left:auto;">${rp.hp}% HP</span>`;
+      listElem.appendChild(row);
+    });
+  }
+}
+
+// 7. Update Remote Players Loop (called every frame in animate)
+function updateRemotePlayers(dt) {
+  if (networkState.remotePlayers.size === 0) return;
+
+  networkState.remotePlayers.forEach((rp) => {
+    // 1. Position and rotation interpolation
+    rp.currentPos.lerp(rp.targetPos, Math.min(1.0, 16.0 * dt));
+    rp.group.position.copy(rp.currentPos);
+
+    let diff = rp.targetYaw - rp.currentYaw;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    rp.currentYaw += diff * Math.min(1.0, 16.0 * dt);
+    rp.group.rotation.y = rp.currentYaw;
+
+    // 2. Health & Nametag sync
+    if (rp.hp !== rp.lastHp) {
+      rp.lastHp = rp.hp;
+      if (rp.nametag) rp.nametag.redraw(rp.hp);
+      updateMultiplayerHUD();
+    }
+
+    // 3. Procedural Gait & 2-Bone IK
+    const bones = rp.bones;
+    const rest = rp.restRotations;
+    const restPos = rp.restPositions;
+    const getB = (name) => bones[name] || bones[name.replace(/\./g, '')];
+    const getR = (name) => rest[name] || rest[name.replace(/\./g, '')];
+    const getP = (name) => restPos[name] || restPos[name.replace(/\./g, '')];
+
+    const thighR = getB('thighR');
+    const thighL = getB('thighL');
+    const shinR = getB('shinR');
+    const shinL = getB('shinL');
+    const footR = getB('footR');
+    const footL = getB('footL');
+    const armR = getB('upper_armR');
+    const armL = getB('upper_armL');
+    const foreR = getB('forearmR');
+    const foreL = getB('forearmL');
+    const handR = getB('handR') || getB('Hand_R');
+    const chest = getB('chest');
+    const hips = getB('hips');
+
+    if (thighR && getR('thighR')) {
+      if (!rp.isGrounded) {
+        // Airborne jump pose
+        const jumpLerp = Math.min(1.0, 14.0 * dt);
+        thighR.rotation.x += (getR('thighR').x - 0.38 - thighR.rotation.x) * jumpLerp;
+        thighL.rotation.x += (getR('thighL').x - 0.28 - thighL.rotation.x) * jumpLerp;
+        if (shinR) shinR.rotation.x += (getR('shinR').x + 0.65 - shinR.rotation.x) * jumpLerp;
+        if (shinL) shinL.rotation.x += (getR('shinL').x + 0.52 - shinL.rotation.x) * jumpLerp;
+        if (footR) footR.rotation.x += (getR('footR').x - 0.32 - footR.rotation.x) * jumpLerp;
+        if (footL) footL.rotation.x += (getR('footL').x - 0.32 - footL.rotation.x) * jumpLerp;
+
+        if (armR) {
+          if (rp.isAiming) {
+            armR.rotation.y += (getR('upper_armR').y + 1.20 + (rp.pitch || 0) * 0.65 - armR.rotation.y) * jumpLerp;
+            armR.rotation.x += (getR('upper_armR').x - armR.rotation.x) * jumpLerp;
+            if (handR) handR.rotation.x += (getR('handR').x + 1.20 + (rp.pitch || 0) * 0.40 - handR.rotation.x) * jumpLerp;
+          } else {
+            armR.rotation.y += (getR('upper_armR').y + 0.40 - armR.rotation.y) * jumpLerp;
+            armR.rotation.x += (getR('upper_armR').x + 0.20 - armR.rotation.x) * jumpLerp;
+          }
+        }
+        if (armL) {
+          armL.rotation.y += (getR('upper_armL').y - 0.35 - armL.rotation.y) * jumpLerp;
+          armL.rotation.x += (getR('upper_armL').x - 0.30 - armL.rotation.x) * jumpLerp;
+        }
+      } else if (rp.isMoving) {
+        // Natural gait cycle
+        const cycleSpeed = rp.isSprinting ? 2.8 : 2.1;
+        const currentSpeed = rp.isSprinting ? 11.2 : 7.0;
+        rp.walkCycle += dt * currentSpeed * cycleSpeed;
+        const cycle = rp.walkCycle;
+
+        // Hip dynamics
+        const hipBob = (rp.isSprinting ? 0.042 : 0.024) * Math.cos(cycle * 2) - (rp.isSprinting ? 0.038 : 0.020);
+        const currentHipY = (getP('hips')?.y || REST_HIP_Y) + hipBob;
+        if (hips) {
+          hips.position.y = currentHipY;
+          hips.position.x = (getP('hips')?.x || 0) + Math.sin(cycle) * (rp.isSprinting ? 0.022 : 0.014);
+          hips.rotation.z = (getR('hips')?.z || 0) + Math.sin(cycle) * (rp.isSprinting ? 0.055 : 0.035);
+          hips.rotation.y = (getR('hips')?.y || 0) + Math.sin(cycle) * (rp.isSprinting ? 0.08 : 0.05);
+        }
+
+        const strideZ = rp.isSprinting ? 0.24 : 0.165;
+        const stepLift = rp.isSprinting ? 0.135 : 0.085;
+        const stanceRatio = 0.58;
+        const sinF = Math.sin(rp.currentYaw);
+        const cosF = Math.cos(rp.currentYaw);
+        const groundY = rp.currentPos.y;
+
+        function computeRemoteLeg(phase, isRight, thighName, shinName, footName) {
+          const tau = ((phase % (Math.PI * 2)) + (Math.PI * 2)) % (Math.PI * 2) / (Math.PI * 2);
+          let targetZ, targetY, anklePitch;
+          const legLocalX = isRight ? 0.14 : -0.14;
+
+          if (tau < stanceRatio) {
+            const u = tau / stanceRatio;
+            targetZ = strideZ * (1.0 - 2.0 * u);
+            anklePitch = u < 0.15 ? -0.26 * (1.0 - u / 0.15) : (u < 0.70 ? 0 : 0.36 * ((u - 0.70) / 0.30));
+            const wX = rp.currentPos.x + sinF * targetZ + cosF * legLocalX;
+            const wZ = rp.currentPos.z + cosF * targetZ - sinF * legLocalX;
+            const slopeDelta = Math.max(-0.35, Math.min(0.35, getTerrainHeight(wX, wZ) - groundY));
+            targetY = REST_ANKLE_Y + slopeDelta;
+          } else {
+            const s = (tau - stanceRatio) / (1.0 - stanceRatio);
+            targetZ = -strideZ + 2.0 * strideZ * (0.5 - 0.5 * Math.cos(Math.PI * s));
+            const swingArc = stepLift * Math.sin(Math.PI * s);
+            anklePitch = s < 0.22 ? 0.36 * (1.0 - s / 0.22) : (s < 0.75 ? -0.06 : -0.06 - 0.20 * ((s - 0.75) / 0.25));
+            const wX = rp.currentPos.x + sinF * targetZ + cosF * legLocalX;
+            const wZ = rp.currentPos.z + cosF * targetZ - sinF * legLocalX;
+            const slopeDelta = Math.max(-0.35, Math.min(0.35, getTerrainHeight(wX, wZ) - groundY));
+            targetY = REST_ANKLE_Y + slopeDelta * (1.0 - Math.sin(Math.PI * s)) + swingArc;
+          }
+
+          const ik = solveLegIK(currentHipY, 0.0, targetY, targetZ, getR(thighName).x, getR(shinName).x);
+          return { ik, anklePitch };
+        }
+
+        const resR = computeRemoteLeg(cycle, true, 'thighR', 'shinR', 'footR');
+        const resL = computeRemoteLeg(cycle + Math.PI, false, 'thighL', 'shinL', 'footL');
+
+        thighR.rotation.x = resR.ik.thighX;
+        shinR.rotation.x = resR.ik.shinX;
+        if (footR) footR.rotation.x = getR('footR').x + resR.anklePitch;
+
+        thighL.rotation.x = resL.ik.thighX;
+        shinL.rotation.x = resL.ik.shinX;
+        if (footL) footL.rotation.x = getR('footL').x + resL.anklePitch;
+
+        // Arm animations
+        if (rp.isAttacking) {
+          const strike = Math.sin(Math.PI * Math.max(0, rp.attackTimer / 0.24));
+          const isRight = rp.attackSide === 0;
+          if (isRight && armR && foreR) {
+            armR.rotation.y = getR('upper_armR').y - 1.48 * strike;
+            foreR.rotation.x = getR('forearmR').x - 0.55 * strike;
+          } else if (!isRight && armL && foreL) {
+            armL.rotation.y = getR('upper_armL').y - 1.48 * strike;
+            foreL.rotation.x = getR('forearmL').x - 0.55 * strike;
+          }
+        } else if (rp.isAiming) {
+          if (armR) {
+            armR.rotation.y = getR('upper_armR').y + 1.20 + (rp.pitch || 0) * 0.65;
+            armR.rotation.x = getR('upper_armR').x;
+          }
+          if (foreR) foreR.rotation.x = getR('forearmR').x;
+          if (handR) handR.rotation.x = getR('handR').x + 1.20 + (rp.pitch || 0) * 0.40;
+        } else {
+          const armSwing = Math.sin(cycle);
+          const armAmpY = rp.isSprinting ? 0.68 : 0.44;
+          const armAmpX = rp.isSprinting ? 0.32 : 0.18;
+          if (armR) {
+            armR.rotation.y = getR('upper_armR').y + 0.40;
+            armR.rotation.x = getR('upper_armR').x + Math.sin(cycle) * 0.08;
+          }
+          if (foreR) foreR.rotation.x = getR('forearmR').x + 0.20;
+          if (handR) handR.rotation.x = getR('handR').x + 0.20;
+          if (armL) {
+            armL.rotation.y = getR('upper_armL').y - armSwing * armAmpY;
+            armL.rotation.x = getR('upper_armL').x - armSwing * armAmpX;
+          }
+          if (foreL) foreL.rotation.x = getR('forearmL').x - Math.max(0, armSwing) * (rp.isSprinting ? 0.48 : 0.30);
+        }
+
+      } else {
+        // Idle pose lerp
+        const lerpFactor = Math.min(1.0, 10.0 * dt);
+        ['thighR', 'thighL', 'shinR', 'shinL', 'footR', 'footL', 'upper_armL', 'forearmL'].forEach(name => {
+          const b = getB(name);
+          const r = getR(name);
+          if (b && r) {
+            b.rotation.x += (r.x - b.rotation.x) * lerpFactor;
+            b.rotation.y += (r.y - b.rotation.y) * lerpFactor;
+            b.rotation.z += (r.z - b.rotation.z) * lerpFactor;
+          }
+        });
+
+        if (rp.isAttacking) {
+          const strike = Math.sin(Math.PI * Math.max(0, rp.attackTimer / 0.24));
+          const isRight = rp.attackSide === 0;
+          if (isRight && armR && foreR) {
+            armR.rotation.y = getR('upper_armR').y - 1.48 * strike;
+            foreR.rotation.x = getR('forearmR').x - 0.55 * strike;
+          } else if (!isRight && armL && foreL) {
+            armL.rotation.y = getR('upper_armL').y - 1.48 * strike;
+            foreL.rotation.x = getR('forearmL').x - 0.55 * strike;
+          }
+        } else if (rp.isAiming) {
+          if (armR) {
+            armR.rotation.y = getR('upper_armR').y + 1.20 + (rp.pitch || 0) * 0.65;
+            armR.rotation.x = getR('upper_armR').x;
+          }
+          if (foreR) foreR.rotation.x = getR('forearmR').x;
+          if (handR) handR.rotation.x = getR('handR').x + 1.20 + (rp.pitch || 0) * 0.40;
+        } else {
+          if (armR) {
+            armR.rotation.y = getR('upper_armR').y + 0.40;
+            armR.rotation.x = getR('upper_armR').x;
+          }
+          if (foreR) foreR.rotation.x = getR('forearmR').x + 0.20;
+          if (handR) handR.rotation.x = getR('handR').x + 0.20;
+        }
+      }
+    }
+  });
+}
+
+// 8. Network Message Handler
+function handleNetworkMessage(event) {
+  try {
+    const data = JSON.parse(event.data);
+    switch (data.type) {
+      case 'welcome':
+        networkState.connected = true;
+        networkState.myId = data.id;
+        networkState.myName = data.name;
+        networkState.myColor = data.color;
+        networkState.isHost = !!data.isHost;
+        console.log(`[Multiplayer] Connesso come ${data.name}! Host: ${networkState.isHost}`);
+        updateMultiplayerHUD();
+
+        if (player.model && data.color && data.color.num !== undefined) {
+          applyColorToModelShirt(player.model, data.color.num);
+        }
+
+        if (Array.isArray(data.players)) {
+          data.players.forEach(p => createRemotePlayer(p));
+        }
+        showMultiplayerNotification(`🎮 Connesso come ${data.name}!`);
+        break;
+
+      case 'player_joined':
+        createRemotePlayer(data.player);
+        showMultiplayerNotification(`👋 ${data.player.name} si è unito!`);
+        playBeep(580, 0.15, 'triangle');
+        break;
+
+      case 'player_left':
+        showMultiplayerNotification(`🚪 ${data.name || 'Un giocatore'} è uscito.`);
+        removeRemotePlayer(data.id);
+        break;
+
+      case 'player_renamed':
+        const rpRename = networkState.remotePlayers.get(data.id);
+        if (rpRename) {
+          rpRename.name = data.name;
+          if (rpRename.nametag) rpRename.nametag.redraw(rpRename.hp);
+          updateMultiplayerHUD();
+        }
+        break;
+
+      case 'batch_update':
+        if (Array.isArray(data.players)) {
+          data.players.forEach(p => {
+            if (p.id === networkState.myId) return;
+            const rp = networkState.remotePlayers.get(p.id);
+            if (rp) {
+              rp.targetPos.set(p.x, p.y, p.z);
+              rp.targetYaw = p.fA;
+              rp.pitch = p.cP || 0;
+              rp.isMoving = p.m === 1;
+              rp.isSprinting = p.s === 1;
+              rp.isGrounded = p.g === 1;
+              rp.walkCycle = p.wc || 0;
+              rp.isAiming = p.aim === 1;
+              if (p.atk === 1 && !rp.isAttacking) {
+                rp.isAttacking = true;
+                rp.attackTimer = 0.24;
+                rp.attackSide = p.side || 0;
+                playPunchWhoosh();
+              }
+              rp.hp = p.hp ?? rp.hp;
+            }
+          });
+        }
+        break;
+
+      case 'player_shoot':
+        if (data.id === networkState.myId) return;
+        const shooter = networkState.remotePlayers.get(data.id);
+        if (data.from && data.to) {
+          const fromVec = new THREE.Vector3(data.from.x, data.from.y, data.from.z);
+          const toVec = new THREE.Vector3(data.to.x, data.to.y, data.to.z);
+          spawnBulletTracer(fromVec, toVec);
+          const dir = toVec.clone().sub(fromVec).normalize();
+          triggerMuzzleFlash(fromVec, dir);
+
+          const dist = camera.position.distanceTo(fromVec);
+          const vol = Math.max(0.1, Math.min(1.0, 1.0 - dist / 55.0));
+          playGunshot(vol);
+
+          if (shooter) {
+            shooter.isAiming = true;
+          }
+        }
+        break;
+
+      case 'player_punch':
+        if (data.id === networkState.myId) return;
+        const puncher = networkState.remotePlayers.get(data.id);
+        if (puncher) {
+          puncher.isAttacking = true;
+          puncher.attackTimer = 0.24;
+          puncher.attackSide = data.side || 0;
+          playPunchWhoosh();
+        }
+        break;
+
+      case 'zombie_hit':
+        if (data.shooterId === networkState.myId) return;
+        const hitZombie = zombies[data.zombieIndex];
+        if (hitZombie && !hitZombie.isDead) {
+          damageZombie(hitZombie, data.damage, data.dirX, data.dirZ, true);
+        }
+        break;
+
+      case 'zombies_sync':
+        if (!networkState.isHost && Array.isArray(data.zombies)) {
+          data.zombies.forEach((zd, idx) => {
+            const z = zombies[idx];
+            if (z && !z.isDead) {
+              z.position.x += (zd.x - z.position.x) * 0.25;
+              z.position.z += (zd.z - z.position.z) * 0.25;
+              z.position.y = getTerrainHeight(z.position.x, z.position.z);
+              z.facingAngle = zd.fA;
+              z.group.position.copy(z.position);
+              z.group.rotation.y = z.facingAngle;
+              if (zd.hp !== undefined && zd.hp < z.hp) {
+                z.hp = zd.hp;
+                updateZombieHealthBar(z);
+              }
+            }
+          });
+        }
+        break;
+    }
+  } catch (e) {
+    console.error('[Multiplayer] Error parsing message:', e);
+  }
+}
+
+// 9. Send Local Player Update to Server (~25Hz)
+function networkSendUpdate(dt) {
+  if (!networkState.connected || !networkState.ws || networkState.ws.readyState !== 1) return;
+  networkState.lastSendTime += dt;
+  if (networkState.lastSendTime < networkState.sendInterval) return;
+  networkState.lastSendTime = 0;
+
+  const isMoving = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'] || Math.hypot(touchInputFwd, touchInputRight) > 0.05;
+  const isSprinting = !!keys['ShiftLeft'] || !!keys['ShiftRight'] || touchSprinting;
+
+  const packet = {
+    type: 'update',
+    x: Math.round(player.position.x * 100) / 100,
+    y: Math.round(player.position.y * 100) / 100,
+    z: Math.round(player.position.z * 100) / 100,
+    facingAngle: Math.round(player.facingAngle * 100) / 100,
+    cameraPitch: Math.round(cameraPitch * 100) / 100,
+    isMoving: isMoving,
+    isSprinting: isSprinting,
+    isGrounded: player.isGrounded,
+    walkCycle: Math.round(player.walkCycle * 100) / 100,
+    isAiming: pistolState.aimTimer > 0,
+    isAttacking: player.isAttacking,
+    attackSide: player.attackSide,
+    hp: Math.round(player.hp)
+  };
+
+  try {
+    networkState.ws.send(JSON.stringify(packet));
+  } catch (e) {}
+
+  // If host, periodically broadcast authoritative zombie positions (every ~180ms)
+  if (networkState.isHost && zombies.length > 0) {
+    networkState.zombieSyncTime += dt;
+    if (networkState.zombieSyncTime > 0.18) {
+      networkState.zombieSyncTime = 0;
+      const zData = zombies.map(z => ({
+        x: Math.round(z.position.x * 100) / 100,
+        y: Math.round(z.position.y * 100) / 100,
+        z: Math.round(z.position.z * 100) / 100,
+        fA: Math.round(z.facingAngle * 100) / 100,
+        hp: Math.round(z.hp),
+        dead: z.isDead
+      }));
+      try {
+        networkState.ws.send(JSON.stringify({
+          type: 'zombies_sync',
+          zombies: zData
+        }));
+      } catch (e) {}
+    }
+  }
+}
+
+// 10. Initialize WebSocket Client Connection
+function initMultiplayer() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}/ws`;
+  console.log(`[Multiplayer] Connessione a ${wsUrl}...`);
+
+  try {
+    const ws = new WebSocket(wsUrl);
+    networkState.ws = ws;
+
+    ws.onopen = () => {
+      console.log('[Multiplayer] 🎮 WebSocket connesso con successo!');
+      networkState.connected = true;
+      updateMultiplayerHUD();
+    };
+
+    ws.onmessage = handleNetworkMessage;
+
+    ws.onclose = () => {
+      console.log('[Multiplayer] Disconnesso dal server WebSocket. Riconnessione tra 3s...');
+      networkState.connected = false;
+      updateMultiplayerHUD();
+      setTimeout(initMultiplayer, 3000);
+    };
+
+    ws.onerror = (err) => {
+      console.warn('[Multiplayer] Avviso WebSocket:', err);
+    };
+  } catch (err) {
+    console.error('[Multiplayer] Impossibile avviare WebSocket:', err);
+  }
+}
 
 // --- 3D Pistol State & Weapons System ---
 const pistolState = {
@@ -685,6 +1450,11 @@ loader.load('/pistol.glb', (gltf) => {
   pistolState.thirdPerson = gltf.scene.clone();
   attachPistolToHand();
 
+  // Attach pistol to any remote players already spawned
+  networkState.remotePlayers.forEach((rp) => {
+    attachPistolToRemotePlayer(rp);
+  });
+
   // 2. First-Person Viewmodel Pistol (pointing forward along -Z into screen, held by FPS hand)
   pistolState.fpsGun = gltf.scene.clone();
   pistolState.fpsGun.position.set(0, 0, 0);
@@ -693,7 +1463,7 @@ loader.load('/pistol.glb', (gltf) => {
   pistolState.fpsGroup.add(pistolState.fpsGun);
   pistolState.fpsGroup.visible = isFirstPerson;
 
-  console.log('🔫 Pistola 3D caricata e agganciata alla mano destra in 1ª e 3ª persona!');
+  console.log('🔫 Pistola 3D caricata e agganciata alla mano destra in 1ª e 3ª persona e ai player remoti!');
 });
 
 // Muzzle Flash VFX
@@ -1019,6 +1789,16 @@ function punchAttack() {
   player.attackSide = 1 - player.attackSide;
   playPunchWhoosh();
   checkPunchHits();
+
+  // Broadcast punch to other players
+  if (networkState.connected && networkState.ws && networkState.ws.readyState === 1) {
+    try {
+      networkState.ws.send(JSON.stringify({
+        type: 'punch',
+        side: player.attackSide
+      }));
+    } catch (e) {}
+  }
 }
 
 function checkPunchHits() {
@@ -1054,7 +1834,7 @@ function checkPunchHits() {
   }
 }
 
-function damageZombie(z, damage, dirX, dirZ) {
+function damageZombie(z, damage, dirX, dirZ, isRemote = false) {
   z.hp = Math.max(0, z.hp - damage);
   z.hitFlashTime = 0.22;
 
@@ -1065,6 +1845,22 @@ function damageZombie(z, damage, dirX, dirZ) {
   playZombieHurt();
   spawnHitParticles(z.position.x, z.position.y + 1.25, z.position.z);
   updateZombieHealthBar(z);
+
+  // Broadcast cooperative zombie damage to server if local hit
+  if (!isRemote && networkState.connected && networkState.ws && networkState.ws.readyState === 1) {
+    const zIdx = zombies.indexOf(z);
+    if (zIdx !== -1) {
+      try {
+        networkState.ws.send(JSON.stringify({
+          type: 'zombie_hit',
+          zombieIndex: zIdx,
+          damage: damage,
+          dirX: Math.round(dirX * 100) / 100,
+          dirZ: Math.round(dirZ * 100) / 100
+        }));
+      } catch (e) {}
+    }
+  }
 
   // Punching a grabbing zombie helps struggle free faster
   if (player.grabbedBy === z) {
@@ -1250,6 +2046,25 @@ function shootGun() {
   // 4. Muzzle flash VFX
   const flashDir = finalHitPos.clone().sub(muzzlePos).normalize();
   triggerMuzzleFlash(muzzlePos, flashDir);
+
+  // Broadcast shot to other players
+  if (networkState.connected && networkState.ws && networkState.ws.readyState === 1) {
+    try {
+      networkState.ws.send(JSON.stringify({
+        type: 'shoot',
+        from: {
+          x: Math.round(muzzlePos.x * 100) / 100,
+          y: Math.round(muzzlePos.y * 100) / 100,
+          z: Math.round(muzzlePos.z * 100) / 100
+        },
+        to: {
+          x: Math.round(finalHitPos.x * 100) / 100,
+          y: Math.round(finalHitPos.y * 100) / 100,
+          z: Math.round(finalHitPos.z * 100) / 100
+        }
+      }));
+    } catch (e) {}
+  }
 
   // Auto-reload after last bullet
   if (pistolState.ammo === 0) {
@@ -2986,6 +3801,8 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
 
   updatePlayer(dt);
+  networkSendUpdate(dt);
+  updateRemotePlayers(dt);
   updateWeapons(dt);
   updateZombies(dt);
   updatePlayerHealthUI(dt);
@@ -2995,6 +3812,9 @@ function animate() {
 
   renderer.render(scene, camera);
 }
+
+// Start WebSocket connection to multiplayer server
+initMultiplayer();
 animate();
 
 // --- Responsive Resize ---
